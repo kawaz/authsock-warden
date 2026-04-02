@@ -15,18 +15,23 @@ use args::{CompletionArgs, LogArgs, RegisterArgs, RunArgs, UnregisterArgs};
 #[command(author, about, long_about = None)]
 #[command(disable_help_flag = true, disable_version_flag = true)]
 pub struct Cli {
+    /// Print help
     #[arg(long, action = clap::ArgAction::Help, global = true)]
     help: Option<bool>,
 
+    /// Print version
     #[arg(short = 'V', long)]
     pub version: bool,
 
+    /// Configuration file path
     #[arg(long, global = true, env = "AUTHSOCK_WARDEN_CONFIG")]
     pub config: Option<PathBuf>,
 
+    /// Enable verbose output
     #[arg(short, long, global = true, conflicts_with = "quiet")]
     pub verbose: bool,
 
+    /// Suppress non-essential output
     #[arg(long, global = true, conflicts_with = "verbose")]
     pub quiet: bool,
 

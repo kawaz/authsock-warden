@@ -21,7 +21,7 @@ test:
 check: fmt-check lint test
 
 run *args:
-    cargo run -- run {{args}}
+    cargo run -- {{args}}
 
 release bump="patch":
     #!/usr/bin/env bash
