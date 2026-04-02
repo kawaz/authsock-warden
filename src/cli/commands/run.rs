@@ -2,7 +2,7 @@
 //!
 //! Starts the authsock-warden proxy in the foreground.
 
-use crate::agent::{Proxy, Server, Upstream};
+use crate::agent::{OpSourceConfig, Proxy, Server, Upstream, WardProxy};
 use crate::cli::args::RunArgs;
 use crate::config::{self, Config, SourceConfig, SourceMember};
 use crate::filter::FilterEvaluator;
@@ -38,22 +38,11 @@ pub async fn execute(args: RunArgs, config_path: Option<PathBuf>) -> anyhow::Res
     for (socket_name, socket_config) in &config.sockets {
         let socket_path = expand_path(&socket_config.path)?;
 
-        // Resolve upstream for this socket
-        let upstream = resolve_upstream(socket_config, &config)?;
+        // Collect op sources from the source group
+        let op_sources = collect_op_sources(socket_config, &config);
 
         // Build filter evaluator
         let filter = build_filter_evaluator(&socket_config.filters)?;
-
-        info!(
-            socket = %socket_name,
-            path = %socket_path,
-            upstream = %upstream.socket_path().display(),
-            filters = ?filter.descriptions(),
-            "Starting proxy"
-        );
-
-        // Create proxy
-        let proxy = Arc::new(Proxy::new(upstream, filter).with_socket_path(socket_path.clone()));
 
         // Bind server
         let mut server = Server::new(&socket_path);
@@ -62,22 +51,72 @@ pub async fn execute(args: RunArgs, config_path: Option<PathBuf>) -> anyhow::Res
         // Spawn server task
         let rx = shutdown_rx.clone();
         let name = socket_name.clone();
-        let task = tokio::spawn(async move {
-            let proxy = proxy;
-            if let Err(e) = server
-                .run(
-                    move |stream| {
-                        let proxy = Arc::clone(&proxy);
-                        async move { proxy.handle_client(stream).await }
-                    },
-                    rx,
-                )
-                .await
-            {
-                error!(socket = %name, error = %e, "Server error");
-            }
-        });
-        tasks.push(task);
+
+        if op_sources.is_empty() {
+            // No op sources — use classic Proxy (agent-only)
+            let upstream = resolve_upstream(socket_config, &config)?;
+
+            info!(
+                socket = %socket_name,
+                path = %socket_path,
+                upstream = %upstream.socket_path().display(),
+                filters = ?filter.descriptions(),
+                "Starting proxy"
+            );
+
+            let proxy =
+                Arc::new(Proxy::new(upstream, filter).with_socket_path(socket_path.clone()));
+
+            let task = tokio::spawn(async move {
+                let proxy = proxy;
+                if let Err(e) = server
+                    .run(
+                        move |stream| {
+                            let proxy = Arc::clone(&proxy);
+                            async move { proxy.handle_client(stream).await }
+                        },
+                        rx,
+                    )
+                    .await
+                {
+                    error!(socket = %name, error = %e, "Server error");
+                }
+            });
+            tasks.push(task);
+        } else {
+            // Op sources present — use WardProxy (multi-backend)
+            let upstream = resolve_upstream_optional(socket_config, &config)?;
+
+            info!(
+                socket = %socket_name,
+                path = %socket_path,
+                upstream = upstream.as_ref().map(|u| u.socket_path().display().to_string()).unwrap_or_else(|| "(none)".to_string()),
+                op_sources = op_sources.len(),
+                filters = ?filter.descriptions(),
+                "Starting WardProxy"
+            );
+
+            let proxy = Arc::new(
+                WardProxy::new(upstream, filter, op_sources).with_socket_path(socket_path.clone()),
+            );
+
+            let task = tokio::spawn(async move {
+                let proxy = proxy;
+                if let Err(e) = server
+                    .run(
+                        move |stream| {
+                            let proxy = Arc::clone(&proxy);
+                            async move { proxy.handle_client(stream).await }
+                        },
+                        rx,
+                    )
+                    .await
+                {
+                    error!(socket = %name, error = %e, "Server error");
+                }
+            });
+            tasks.push(task);
+        }
     }
 
     info!(
@@ -144,6 +183,63 @@ fn resolve_upstream(
 
     // 2. Fallback to SSH_AUTH_SOCK
     Ok(Upstream::from_env()?)
+}
+
+/// Resolve upstream as optional (returns None if no agent member found and no SSH_AUTH_SOCK).
+///
+/// Used by WardProxy which can operate without an upstream agent
+/// (e.g., when only op:// sources are configured).
+fn resolve_upstream_optional(
+    socket_config: &crate::config::SocketConfig,
+    config: &Config,
+) -> anyhow::Result<Option<Upstream>> {
+    if let Some(ref source_name) = socket_config.source
+        && let Some(source) = config.sources.iter().find(|s| s.name() == source_name)
+        && let Ok(members) = source.parse_members()
+    {
+        for member in &members {
+            let resolved = member.resolve().unwrap_or_else(|_| member.clone());
+            if let SourceMember::Agent { socket } = &resolved {
+                let expanded = expand_path(socket)?;
+                return Ok(Some(Upstream::new(expanded)));
+            }
+        }
+    }
+
+    // Try SSH_AUTH_SOCK as fallback, but return None if not available
+    match Upstream::from_env() {
+        Ok(upstream) => Ok(Some(upstream)),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Collect op:// source configurations from the socket's source group.
+fn collect_op_sources(
+    socket_config: &crate::config::SocketConfig,
+    config: &Config,
+) -> Vec<OpSourceConfig> {
+    let Some(ref source_name) = socket_config.source else {
+        return vec![];
+    };
+
+    let Some(source) = config.sources.iter().find(|s| s.name() == source_name) else {
+        return vec![];
+    };
+
+    let Ok(members) = source.parse_members() else {
+        return vec![];
+    };
+
+    members
+        .into_iter()
+        .filter_map(|member| {
+            if let SourceMember::Op { vault, item } = member {
+                Some(OpSourceConfig { vault, item })
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Apply CLI arguments on top of config (CLI takes precedence)

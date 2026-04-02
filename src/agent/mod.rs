@@ -8,7 +8,9 @@
 mod proxy;
 mod server;
 mod upstream;
+mod warden_proxy;
 
 pub use proxy::Proxy;
 pub use server::Server;
 pub use upstream::Upstream;
+pub use warden_proxy::{OpSourceConfig, WardProxy};

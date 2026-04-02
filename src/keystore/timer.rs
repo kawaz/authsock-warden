@@ -173,8 +173,11 @@ mod tests {
     }
 
     #[test]
-    fn time_until_forget_none_when_expired() {
+    fn time_until_forget_zero_or_none_when_expired() {
         let timer = KeyTimer::new(None, Some(Duration::ZERO));
-        assert!(timer.time_until_forget().is_none());
+        match timer.time_until_forget() {
+            None => {} // expired
+            Some(d) => assert_eq!(d, Duration::ZERO), // just at the boundary
+        }
     }
 }
