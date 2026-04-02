@@ -12,45 +12,44 @@ idle_check_command = "/path/to/cmux-check.sh"
 method = "command"
 command = "/path/to/notify-and-verify.sh"
 
-# --- Key sources ---
+# --- Source groups ---
 
-# Proxy mode: forward signing requests to 1Password SSH agent
+# A source group bundles multiple key sources under one name.
+# Members use URI-like notation:
+#   op://              → all 1Password SSH keys (warden signs locally)
+#   op://vault         → SSH keys in a specific vault
+#   op://vault/item    → a specific SSH key
+#   agent:PATH         → proxy to an SSH agent socket (upstream signs)
+#   file:PATH          → load private key from file (warden signs locally)
+#   /path/to/something → auto-detect: socket → agent, file → key
+
+# Work source: 1Password managed keys + agent proxy
 [[sources]]
-type = "agent"
-name = "1password-proxy"
-socket = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+name = "work"
+members = [
+    "op://emerada",
+    "agent:~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock",
+]
 
-# 1Password managed: warden fetches keys via op CLI and signs locally
+# Personal source: local key file
 # [[sources]]
-# type = "op"
-# name = "1password-managed"
-
-# File-based keys
-# [[sources]]
-# type = "file"
-# name = "local-keys"
-# paths = ["~/.ssh/id_work", "~/.ssh/id_personal"]
+# name = "personal"
+# members = ["~/.ssh/id_personal"]
 
 # --- Socket definitions ---
 
 # Work socket: only ed25519 keys with @work in comment
 [sockets.work]
 path = "$XDG_RUNTIME_DIR/authsock-warden/work.sock"
-sources = ["1password-proxy"]
+source = "work"
 filters = ["comment=~@work", "type=ed25519"]
 timeout = "1h"
 allowed_processes = ["git", "ssh", "jj"]
 
-# Personal socket: all keys from 1Password
-[sockets.personal]
-path = "$XDG_RUNTIME_DIR/authsock-warden/personal.sock"
-sources = ["1password-proxy"]
-filters = ["comment=~personal"]
-
 # All keys socket: no filtering
 [sockets.all]
 path = "/tmp/authsock-warden.sock"
-sources = ["1password-proxy"]
+source = "work"
 
 # --- Per-key policies ---
 
@@ -58,8 +57,8 @@ sources = ["1password-proxy"]
 # [[keys]]
 # public_key = "ssh-ed25519 AAAA... GitHub"
 # timeout = "4h"
-# on_timeout = "lock"
-# forget_after = "24h"
+# on_timeout = "lock"        # "lock" keeps key in memory, "forget" zeroizes it
+# forget_after = "24h"       # absolute limit, even if locked
 # allowed_processes = ["ssh", "git", "jj"]
 
 # --- GitHub API settings ---

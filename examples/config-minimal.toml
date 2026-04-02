@@ -4,10 +4,9 @@
 # Place this at: ~/.config/authsock-warden/config.toml
 
 [[sources]]
-type = "agent"
 name = "1password"
-socket = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+members = ["~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"]
 
 [sockets.default]
 path = "/tmp/authsock-warden.sock"
-sources = ["1password"]
+source = "1password"

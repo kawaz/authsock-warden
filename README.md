@@ -42,13 +42,12 @@ Create `~/.config/authsock-warden/config.toml`:
 ```toml
 # Proxy all keys from 1Password SSH agent
 [[sources]]
-type = "agent"
 name = "1password"
-socket = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+members = ["~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"]
 
 [sockets.default]
 path = "/tmp/authsock-warden.sock"
-sources = ["1password"]
+source = "1password"
 ```
 
 ### Run
@@ -56,6 +55,9 @@ sources = ["1password"]
 ```bash
 # Start the proxy
 authsock-warden run
+
+# Or without a config file:
+authsock-warden run --socket /tmp/authsock-warden.sock
 
 # In another terminal, use the proxy
 export SSH_AUTH_SOCK=/tmp/authsock-warden.sock
@@ -65,10 +67,19 @@ ssh-add -L  # Lists keys from 1Password, filtered by warden
 ### Advanced Configuration
 
 ```toml
+# Source group: bundle multiple key sources
+[[sources]]
+name = "work"
+members = [
+    "op://emerada",           # 1Password vault (warden signs locally)
+    "agent:~/.ssh/agent.sock", # SSH agent proxy (upstream signs)
+    "file:~/.ssh/id_work",    # Local key file
+]
+
 # Filter keys per socket
 [sockets.work]
 path = "/tmp/authsock-warden-work.sock"
-sources = ["1password"]
+source = "work"
 filters = ["comment=~@work", "type=ed25519"]
 allowed_processes = ["git", "ssh", "jj"]
 timeout = "1h"
