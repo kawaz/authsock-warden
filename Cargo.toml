@@ -45,6 +45,10 @@ bytes = "1"
 # HTTP client (for GitHub keys)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
+# Security: secret zeroization
+zeroize = { version = "1", features = ["derive"] }
+secrecy = "0.10"
+
 # Scope guard
 scopeguard = "1"
 

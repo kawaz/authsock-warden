@@ -6,6 +6,7 @@ pub mod cli;
 pub mod config;
 pub mod error;
 pub mod filter;
+pub mod keystore;
 pub mod policy;
 pub mod protocol;
 pub mod utils;
