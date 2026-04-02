@@ -87,6 +87,7 @@ dependencies = [
  "plist",
  "regex",
  "reqwest",
+ "scopeguard",
  "serde",
  "serde_json",
  "shellexpand",

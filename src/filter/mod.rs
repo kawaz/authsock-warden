@@ -1,19 +1,28 @@
-//! SSH key filtering module
+//! Filter module for key filtering
 //!
-//! Provides filter rules for controlling which SSH keys are visible
-//! on each socket. Supports filtering by comment, fingerprint, key type,
-//! public key, key file, and GitHub user keys.
+//! This module provides various filter types for SSH keys:
+//! - Fingerprint matching
+//! - Comment matching (exact, glob, regex)
+//! - Key type matching
+//! - Public key matching
+//! - Keyfile matching (authorized_keys format)
+//! - GitHub user keys matching
+//! - Negation
 
-pub mod evaluator;
-pub mod rule;
+mod comment;
+mod evaluator;
+mod fingerprint;
+mod github;
+mod keyfile;
+mod keytype;
+mod pubkey;
+mod rule;
 
-// Filter matchers
-pub mod comment;
-pub mod fingerprint;
-pub mod github;
-pub mod keyfile;
-pub mod keytype;
-pub mod pubkey;
-
+pub use comment::CommentMatcher;
 pub use evaluator::FilterEvaluator;
-pub use rule::FilterRule;
+pub use fingerprint::FingerprintMatcher;
+pub use github::GitHubKeysMatcher;
+pub use keyfile::KeyfileMatcher;
+pub use keytype::KeyTypeMatcher;
+pub use pubkey::PubkeyMatcher;
+pub use rule::{Filter, FilterRule};
