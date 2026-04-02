@@ -69,8 +69,9 @@ release bump="patch":
     jj new
     jj bookmark set main -r @-
     jj tag set "v${new_version}" -r @-
+    jj git push --bookmark main
+    jj git export
+    GIT_WORK_TREE="$(pwd)" git --git-dir="$(jj root)/../.git" push origin "v${new_version}"
 
-    echo ""
-    echo "Ready to push v${new_version}. Run:"
-    echo "  jj git push --bookmark main"
-    echo "  gh run watch"
+    # Watch workflow
+    gh run watch
