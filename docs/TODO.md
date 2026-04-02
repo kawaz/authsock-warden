@@ -4,7 +4,7 @@
 
 ### High Priority
 - [ ] **WardProxy/KeyRegistry 統合** — 秘密鍵キャッシュが KeyRegistry の zeroize 保護をバイパスしている。OpManagedKey.cached_private_key を KeyRegistry に統合すべき
-- [ ] **PKCS#8 パーサー改善** — 自前の ASN.1 パターンマッチではなく pkcs8 クレートの PrivateKeyInfo::from_der を使用
+- [ ] **PKCS#8 パーサー改善** — pkcs8 クレートは 1Password の non-canonical DER を拒否するため断念。1Password 側が修正されるか、lenient モードが追加されるまで現行のパターンマッチを維持。Design rationale コメント追加済み
 - [ ] **RSA 署名 flags 対応** — SSH_AGENT_RSA_SHA2_256/512 フラグに応じてハッシュアルゴリズムを切り替え
 
 ### Medium Priority
