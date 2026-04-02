@@ -24,6 +24,11 @@ pub struct Config {
     #[serde(default)]
     pub auth: AuthConfig,
 
+    /// 1Password account (URL or UUID) for op CLI
+    /// Required when multiple accounts are configured.
+    /// Sets OP_ACCOUNT environment variable for all op CLI calls.
+    pub op_account: Option<String>,
+
     /// Key source group definitions
     #[serde(default)]
     pub sources: Vec<SourceConfig>,

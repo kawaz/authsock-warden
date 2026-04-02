@@ -289,7 +289,12 @@ mod launchd {
             .join(name))
     }
 
-    pub fn generate_plist(name: &str, exe_path: &str, config_path: &str) -> Result<Vec<u8>> {
+    pub fn generate_plist(
+        name: &str,
+        exe_path: &str,
+        config_path: &str,
+        op_account: Option<&str>,
+    ) -> Result<Vec<u8>> {
         let args = vec![
             exe_path.to_string(),
             "run".to_string(),
@@ -303,6 +308,11 @@ mod launchd {
         let path =
             std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".to_string());
         env.insert("PATH".to_string(), path);
+
+        // Set OP_ACCOUNT for multi-account 1Password setups
+        if let Some(account) = op_account {
+            env.insert("OP_ACCOUNT".to_string(), account.to_string());
+        }
 
         let log_dir = log_dir(name)?;
         let log_path = log_dir.join("output.log");
@@ -385,7 +395,7 @@ pub async fn register(args: RegisterArgs, config_override: Option<PathBuf>) -> R
     let config_path_str = config_path.display().to_string();
 
     // Validate config file is parseable
-    let _config_file = load_config(&config_path)
+    let config_file = load_config(&config_path)
         .map_err(|e| anyhow::anyhow!("Invalid configuration file: {}", e))?;
 
     info!(name = %args.name, executable = %exe_path_str, config = %config_path_str, "Registering launchd service");
@@ -413,7 +423,12 @@ pub async fn register(args: RegisterArgs, config_override: Option<PathBuf>) -> R
     fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
 
     // Generate and write plist
-    let plist_content = launchd::generate_plist(&args.name, &exe_path_str, &config_path_str)?;
+    let plist_content = launchd::generate_plist(
+        &args.name,
+        &exe_path_str,
+        &config_path_str,
+        config_file.config.op_account.as_deref(),
+    )?;
     fs::write(&plist_path, &plist_content).context("Failed to write launchd plist")?;
 
     println!("Created: {}", plist_path.display());
@@ -600,7 +615,7 @@ pub async fn register(args: RegisterArgs, config_override: Option<PathBuf>) -> R
     let config_path_str = config_path.display().to_string();
 
     // Validate config file is parseable
-    let _config_file = load_config(&config_path)
+    let config_file = load_config(&config_path)
         .map_err(|e| anyhow::anyhow!("Invalid configuration file: {}", e))?;
 
     info!(name = %args.name, executable = %exe_path_str, config = %config_path_str, "Registering systemd service");

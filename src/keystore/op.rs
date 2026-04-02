@@ -8,18 +8,28 @@
 //! SIGN_REQUEST triggers the initial discovery.
 
 use crate::error::{Error, Result};
+use serde::Deserialize;
 use std::process::Command;
+use std::sync::OnceLock;
+use tracing::{debug, info};
 
-/// Create an `op` command with account selection if OP_ACCOUNT is set.
+/// Global account setting for op CLI (thread-safe, set once at startup)
+static OP_ACCOUNT: OnceLock<String> = OnceLock::new();
+
+/// Set the 1Password account for all op CLI calls.
+/// Should be called once at startup from config.
+pub fn set_account(account: String) {
+    let _ = OP_ACCOUNT.set(account);
+}
+
+/// Create an `op` command with account selection if configured.
 fn op_command() -> Command {
     let mut cmd = Command::new("op");
-    if let Ok(account) = std::env::var("OP_ACCOUNT") {
-        cmd.args(["--account", &account]);
+    if let Some(account) = OP_ACCOUNT.get() {
+        cmd.args(["--account", account]);
     }
     cmd
 }
-use serde::Deserialize;
-use tracing::{debug, info};
 
 /// An SSH key item discovered from 1Password
 #[derive(Debug, Clone)]

@@ -23,6 +23,11 @@ pub async fn execute(args: RunArgs, config_path: Option<PathBuf>) -> anyhow::Res
         return Ok(());
     }
 
+    // Set op_account for multi-account 1Password setups
+    if let Some(ref account) = config.op_account {
+        crate::keystore::op::set_account(account.clone());
+    }
+
     if config.sockets.is_empty() {
         anyhow::bail!(
             "No sockets defined.\n\n\
