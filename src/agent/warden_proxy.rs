@@ -174,8 +174,13 @@ impl WardProxy {
     async fn handle_request_identities(&self, request: AgentMessage) -> Result<AgentMessage> {
         debug!("Handling REQUEST_IDENTITIES (WardProxy)");
 
-        // Ensure op keys are discovered (lazy init)
+        // Ensure op keys are discovered (lazy init on first call)
         self.ensure_op_initialized().await;
+
+        // Refresh op keys from 1Password agent socket (fast, no TouchID)
+        if !self.op_sources.is_empty() {
+            self.refresh_op_keys_from_agent().await;
+        }
 
         let mut all_identities: Vec<Identity> = Vec::new();
         let mut new_backend_map: HashMap<Bytes, SigningBackend> = HashMap::new();
@@ -573,6 +578,111 @@ impl WardProxy {
 
         info!(count = keys.len(), "Op key discovery complete");
         Ok(keys)
+    }
+
+    /// Refresh op keys by querying the 1Password agent socket.
+    ///
+    /// Called on every REQUEST_IDENTITIES (after initial discovery).
+    /// Detects newly added keys in the agent and adds them to op_state.
+    /// This is fast (no op CLI, no TouchID).
+    async fn refresh_op_keys_from_agent(&self) {
+        use crate::keystore::cache::{CachedKey, OpKeyCache};
+        use ssh_key::HashAlg;
+
+        let state_is_ready = {
+            let state = self.op_state.read().await;
+            matches!(&*state, OpState::Ready { .. })
+        };
+        if !state_is_ready {
+            return;
+        }
+
+        let Some(agent_path) = onepassword_agent_socket() else {
+            return;
+        };
+
+        let upstream = Upstream::new(&agent_path);
+        let mut conn = match upstream.connect().await {
+            Ok(conn) => conn,
+            Err(_) => return,
+        };
+
+        let request = AgentMessage::new(MessageType::RequestIdentities, Bytes::new());
+        let response = match conn.send_receive(&request).await {
+            Ok(resp) => resp,
+            Err(_) => return,
+        };
+
+        if response.msg_type != MessageType::IdentitiesAnswer {
+            return;
+        }
+
+        let identities = response.parse_identities().unwrap_or_default();
+
+        // Check for new keys not in op_state
+        let mut new_keys = Vec::new();
+        {
+            let state = self.op_state.read().await;
+            if let OpState::Ready { keys } = &*state {
+                for identity in &identities {
+                    if !keys.contains_key(&identity.key_blob) {
+                        new_keys.push(identity.clone());
+                    }
+                }
+            }
+        }
+
+        if new_keys.is_empty() {
+            return;
+        }
+
+        debug!(
+            count = new_keys.len(),
+            "Detected new keys from 1Password agent"
+        );
+
+        // Try to match new keys against cache by fingerprint
+        let cache = OpKeyCache::load();
+        let cache_map = cache
+            .by_fingerprint()
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect::<std::collections::HashMap<String, CachedKey>>();
+
+        let mut added = 0;
+        let mut updated_cache = false;
+
+        {
+            let mut state = self.op_state.write().await;
+            if let OpState::Ready { keys } = &mut *state {
+                for identity in &new_keys {
+                    if let Some(pub_key) = &identity.public_key {
+                        let fp = pub_key.fingerprint(HashAlg::Sha256).to_string();
+                        if let Some(cached) = cache_map.get(&fp) {
+                            keys.insert(
+                                identity.key_blob.clone(),
+                                OpManagedKey {
+                                    item_id: cached.item_id.clone(),
+                                    title: cached.title.clone(),
+                                },
+                            );
+                            added += 1;
+                            debug!(title = %cached.title, "Added new key from agent (cache hit)");
+                        } else {
+                            // New key not in cache — would need op item list to get itemid
+                            // Skip for now, will be picked up on next full discovery
+                            debug!(fingerprint = %fp, "New key from agent not in cache, skipping");
+                            updated_cache = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if added > 0 {
+            info!(added = added, "Refreshed op keys from 1Password agent");
+        }
+        let _ = updated_cache; // TODO: trigger op item list on next suitable occasion
     }
 
     /// Try to resolve public keys via 1Password agent socket (fast path).
