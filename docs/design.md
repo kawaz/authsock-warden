@@ -23,31 +23,54 @@ authsock（SSH_AUTH_SOCK）+ warden（番人・管理人）
 5. **鍵ライフサイクル管理** — 4状態遷移、タイムアウト、re-auth
 6. **セキュリティ** — メモリ保護（mlock, zeroize）、デバッガ拒否
 
-### KeySource 抽象化
+### source グループ
 
-authsock-warden は複数の鍵ソースタイプをサポートする。
+authsock-warden は「source」を鍵の出どころのグループとして扱う。1つの source が複数の member（鍵ソース）を束ねる。
 
-| ソースタイプ | type値 | 署名方式 | 鍵の在処 | 認証 |
-|---|---|---|---|---|
-| agent (proxy) | `"agent"` | upstream に転送 | upstream が保持 | upstream 任せ |
-| 1Password | `"op"` | warden がローカル署名 | op CLI で遅延取得 → メモリ | TouchID |
-| ファイル | `"file"` | warden がローカル署名 | ファイルから読み込み → メモリ | パスフレーズ |
+#### member の種類
 
-共通パターン:
-- 公開鍵の発見（起動時）
-- 署名時の認証（初回）
-- メモリ保持（ローカル署名の場合）
-- タイムアウト/破棄
+| member 記法 | 署名方式 | 鍵の在処 | 認証 |
+|---|---|---|---|
+| `op:` | warden がローカル署名 | op CLI で遅延取得 → メモリ | TouchID |
+| `agent:PATH` or socket パス | upstream に転送 | upstream が保持 | upstream 任せ |
+| `file:PATH` or 通常ファイルパス | warden がローカル署名 | ファイルから読み込み → メモリ | パスフレーズ |
 
-trait設計イメージ:
-```rust
-trait KeySource {
-    fn name(&self) -> &str;
-    fn discover(&self) -> Vec<Identity>;
-    fn sign(&self, key: &PublicKey, data: &[u8], flags: u32) -> Result<Signature>;
-    fn forget(&self, key: &PublicKey);  // proxy はno-op
-}
+プレフィックスなしのパスはファイル種別で自動判定（socket → agent、通常ファイル → file）。
+
+#### source とソケットの関係
+
 ```
+source "work" (members: op:, agent:/path/to/1password.sock, file:~/.ssh/id_work)
+  └── socket /tmp/work.sock (filters: comment=~@work)
+  └── socket /tmp/all.sock (no filters)
+
+source "personal" (members: ~/.ssh/id_personal)
+  └── socket /tmp/personal.sock
+```
+
+ソケットは1つの source グループを参照する（`source = "work"`）。複数種類の鍵を使いたければ source の members にまとめる。
+
+#### CLI 対応
+
+```bash
+# --source がグループを開始、以降の --socket はそのグループに属する
+authsock-warden run \
+  --source op:,~/Library/.../agent.sock \
+  --socket /tmp/work.sock comment=*@work* \
+  --socket /tmp/all.sock
+
+# 名前付き
+authsock-warden run \
+  --source work=op:,~/Library/.../agent.sock \
+  --socket /tmp/work.sock
+
+# --source 省略時は $SSH_AUTH_SOCK を暗黙の agent ソースとして使用
+authsock-warden run --socket /tmp/warden.sock
+```
+
+#### 同一公開鍵の優先順位
+
+members の順序で先勝ち。`["op:", "agent:..."]` なら op が優先。
 
 ### 鍵の4状態ライフサイクル
 
@@ -162,32 +185,29 @@ idle_check_command = "/path/to/cmux-check.sh"
 method = "command"
 command = "/path/to/notify-and-verify.sh"
 
-# 鍵ソース定義
+# source グループ定義
 [[sources]]
-type = "agent"
-name = "1password-proxy"
-socket = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+name = "work"
+members = [
+    "op:",
+    "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock",
+]
 
 [[sources]]
-type = "op"
-name = "1password-managed"
-
-[[sources]]
-type = "file"
-name = "local-keys"
-paths = ["~/.ssh/id_work", "~/.ssh/id_personal"]
+name = "personal"
+members = ["~/.ssh/id_personal"]
 
 # ソケット定義
 [sockets.work]
 path = "$XDG_RUNTIME_DIR/authsock-warden/work.sock"
-sources = ["1password-managed"]
+source = "work"
 filters = ["comment=~@work"]
 timeout = "1h"
 allowed_processes = ["git"]
 
 [sockets.all]
 path = "$XDG_RUNTIME_DIR/authsock-warden/all.sock"
-sources = ["1password-proxy", "local-keys"]
+source = "work"
 
 # 鍵ごとのポリシー
 [[keys]]

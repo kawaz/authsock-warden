@@ -1,6 +1,6 @@
 # DR-005: 鍵ソースの抽象化（KeySource trait）
 
-- **Status**: Active
+- **Status**: Superseded by [DR-010](DR-010-source-group-design.md)
 - **Date**: 2026-04-02
 
 ## 背景
