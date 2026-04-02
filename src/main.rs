@@ -22,6 +22,9 @@ async fn main() -> std::process::ExitCode {
 
     init_logging(cli.verbose, cli.quiet);
 
+    // Apply security protections before handling any secrets
+    authsock_warden::security::anti_debug::apply_protections();
+
     let result = run(cli).await;
 
     match result {
