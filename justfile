@@ -1,54 +1,34 @@
-default: fmt lint build test
+# authsock-warden
 
-fmt:
-    cargo fmt
+# デフォルト: レシピ一覧
+default:
+    @just --list
 
-fmt-check:
-    cargo fmt --check
-
-lint:
-    cargo clippy -- -D warnings
-
+# ビルド (release)
 build:
-    cargo build
-
-build-release:
     cargo build --release
 
+# テスト
 test:
     cargo test
 
-check: fmt-check lint test
+# lint + format チェック
+check:
+    cargo fmt --check
+    cargo clippy -- -D warnings
 
-run *args:
-    cargo run -- {{args}}
+# format 適用
+fmt:
+    cargo fmt
 
-# Finalize a release: describe current change, new, bookmark, tag, push
-# Use after version bump and CHANGELOG update are in the working copy
-finalize-release version:
-    jj describe -m "Release v{{version}}"
-    jj new
-    jj bookmark set main -r @-
-    jj tag set "v{{version}}" -r @-
-    jj git push --bookmark main
-    just push-tag "v{{version}}"
-    gh run watch
+# ビルドして実行
+run *ARGS: build
+    ./target/release/authsock-warden {{ARGS}}
 
-# Push a git tag (jj doesn't support tag push natively)
-push-tag tag:
-    jj git export
-    GIT_WORK_TREE="$(pwd)" git --git-dir="$(jj root)/../.git" push origin "{{tag}}"
-
+# リリース (bump: major, minor, patch)
 release bump="patch":
     #!/usr/bin/env bash
     set -euo pipefail
-
-    # 0. Ensure clean workspace
-    if [[ -n "$(jj status --no-pager 2>/dev/null | grep -v 'Working copy' | grep -v 'Parent commit' | grep -c '^[AMD]')" ]] && [[ "$(jj status --no-pager 2>/dev/null | grep -v 'Working copy' | grep -v 'Parent commit' | grep -c '^[AMD]')" -gt 0 ]]; then
-        echo "Error: Working tree has uncommitted changes" >&2
-        jj status >&2
-        exit 1
-    fi
 
     # Pre-checks
     cargo fmt --check || { echo "Error: Run 'cargo fmt' first." >&2; exit 1; }
@@ -56,21 +36,21 @@ release bump="patch":
     cargo build --release
     cargo test
 
-    # 1. Version bump in Cargo.toml
+    # Version bump
     current=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     IFS='.' read -r major minor patchv <<< "$current"
     case "{{bump}}" in
         major) major=$((major + 1)); minor=0; patchv=0 ;;
         minor) minor=$((minor + 1)); patchv=0 ;;
         patch) patchv=$((patchv + 1)) ;;
-        *) echo "Error: Invalid bump type '{{bump}}' (expected: major, minor, patch)" >&2; exit 1 ;;
+        *) echo "Error: Invalid bump type '{{bump}}'" >&2; exit 1 ;;
     esac
     new_version="${major}.${minor}.${patchv}"
     sed -i '' "s/^version = \"${current}\"/version = \"${new_version}\"/" Cargo.toml
-    cargo check --quiet  # Update Cargo.lock
+    cargo check --quiet
     echo "Version: ${current} -> ${new_version}"
 
-    # 2. CHANGELOG.md update via Claude
+    # CHANGELOG.md update via Claude
     claude "CHANGELOG.mdを更新してください。バージョンは v${current} -> v${new_version} です。[Unreleased] セクションの内容を [${new_version}] - $(date +%Y-%m-%d) に変更し、新しい空の [Unreleased] セクションを追加してください。"
 
     # Verify CHANGELOG was updated
@@ -80,5 +60,14 @@ release bump="patch":
         exit 1
     fi
 
-    # 3. Finalize: describe, new, bookmark, tag, push, watch
-    just finalize-release "${new_version}"
+    # Commit, tag, push
+    jj describe -m "Release v${new_version}"
+    jj new
+    jj bookmark set main -r @-
+    jj tag set "v${new_version}" -r @-
+    jj git push --bookmark main
+    jj git export
+    GIT_WORK_TREE="$(pwd)" git --git-dir="$(jj root)/../.git" push origin "v${new_version}"
+
+    # Watch workflow
+    gh run watch
