@@ -13,8 +13,9 @@ use tokio::sync::watch;
 use tracing::{error, info, warn};
 
 pub async fn execute(args: RunArgs, config_path: Option<PathBuf>) -> anyhow::Result<()> {
-    // Load config
-    let config = load_config(config_path.as_deref())?;
+    // Load config from file, then overlay CLI args
+    let mut config = load_config(config_path.as_deref())?;
+    apply_cli_args(&mut config, &args);
 
     if args.print_config {
         let toml_str = toml::to_string_pretty(&config)?;
@@ -24,7 +25,7 @@ pub async fn execute(args: RunArgs, config_path: Option<PathBuf>) -> anyhow::Res
 
     if config.sockets.is_empty() {
         anyhow::bail!(
-            "No sockets defined in configuration. Add at least one [sockets.NAME] section."
+            "No sockets defined. Use --socket PATH or add [sockets.NAME] to config file."
         );
     }
 
@@ -142,6 +143,50 @@ fn resolve_upstream(
 
     // 3. Fallback to SSH_AUTH_SOCK
     Ok(Upstream::from_env()?)
+}
+
+/// Apply CLI arguments on top of config (CLI takes precedence)
+fn apply_cli_args(config: &mut Config, args: &RunArgs) {
+    // --upstream overrides the upstream for all sockets
+    if let Some(ref upstream) = args.upstream {
+        // Add or replace default agent source
+        let upstream_str = upstream.display().to_string();
+        let has_cli_source = config.sources.iter().any(|s| s.name() == "_cli");
+        if !has_cli_source {
+            config.sources.push(SourceConfig::Agent {
+                name: "_cli".to_string(),
+                socket: upstream_str,
+            });
+        }
+    }
+
+    // --socket adds sockets from CLI
+    let cli_sockets = args.parse_sockets();
+    for (i, (path, filters)) in cli_sockets.into_iter().enumerate() {
+        let name = if i == 0 {
+            "default".to_string()
+        } else {
+            format!("cli-{}", i)
+        };
+
+        let filter_groups: Vec<Vec<String>> = filters.into_iter().map(|f| vec![f]).collect();
+
+        let mut socket_config = crate::config::SocketConfig {
+            path,
+            sources: vec![],
+            filters: filter_groups,
+            timeout: None,
+            allowed_processes: vec![],
+            upstream: None,
+        };
+
+        // If --upstream was given, point this socket to it
+        if args.upstream.is_some() {
+            socket_config.sources = vec!["_cli".to_string()];
+        }
+
+        config.sockets.insert(name, socket_config);
+    }
 }
 
 fn build_filter_evaluator(filters: &[Vec<String>]) -> anyhow::Result<FilterEvaluator> {

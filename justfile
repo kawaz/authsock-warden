@@ -20,6 +20,9 @@ test:
 
 check: fmt-check lint test
 
+run *args:
+    cargo run -- {{args}}
+
 # リリースフロー（authsock-filterの just release パターンを踏襲）
 # release bump="patch":
 #     (TODO: implement)
