@@ -38,6 +38,10 @@ pub async fn execute(args: RunArgs, config_path: Option<PathBuf>) -> anyhow::Res
     // Set up shutdown signal
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    // Create shared op_state for all WardProxy instances
+    // This ensures op item list is called only once, and private key cache is shared
+    let shared_op_state = WardProxy::create_shared_op_state();
+
     // Build and run proxies for each socket
     let mut tasks = Vec::new();
 
@@ -103,7 +107,13 @@ pub async fn execute(args: RunArgs, config_path: Option<PathBuf>) -> anyhow::Res
             );
 
             let proxy = Arc::new(
-                WardProxy::new(upstream, filter, op_sources).with_socket_path(socket_path.clone()),
+                WardProxy::with_shared_state(
+                    upstream,
+                    filter,
+                    op_sources,
+                    Arc::clone(&shared_op_state),
+                )
+                .with_socket_path(socket_path.clone()),
             );
 
             let task = tokio::spawn(async move {

@@ -32,7 +32,7 @@ pub struct OpSourceConfig {
 }
 
 /// State of op key discovery (lazy initialization)
-enum OpState {
+pub(crate) enum OpState {
     /// Not yet initialized — will be initialized on first request
     Uninitialized,
     /// Keys discovered successfully
@@ -45,7 +45,7 @@ enum OpState {
 }
 
 /// A key managed by 1Password
-struct OpManagedKey {
+pub(crate) struct OpManagedKey {
     /// 1Password item ID (used to fetch private key)
     item_id: String,
     /// Human-readable title (used as identity comment)
@@ -98,16 +98,39 @@ impl WardProxy {
         filter: FilterEvaluator,
         op_sources: Vec<OpSourceConfig>,
     ) -> Self {
+        Self::with_shared_state(
+            upstream,
+            filter,
+            op_sources,
+            Arc::new(RwLock::new(OpState::Uninitialized)),
+        )
+    }
+
+    /// Create a new WardProxy with a shared op_state.
+    ///
+    /// Multiple WardProxy instances sharing the same op_state will
+    /// only initialize op keys once, and share the private key cache.
+    pub(crate) fn with_shared_state(
+        upstream: Option<Upstream>,
+        filter: FilterEvaluator,
+        op_sources: Vec<OpSourceConfig>,
+        op_state: Arc<RwLock<OpState>>,
+    ) -> Self {
         Self {
             socket_path: String::new(),
             connection_counter: AtomicU64::new(0),
             filter: Arc::new(filter),
             op_sources,
             upstream: upstream.map(Arc::new),
-            op_state: Arc::new(RwLock::new(OpState::Uninitialized)),
+            op_state,
             key_backend_map: Arc::new(RwLock::new(HashMap::new())),
             allowed_keys_cache: Arc::new(RwLock::new(HashSet::new())),
         }
+    }
+
+    /// Create a shared op_state for use across multiple WardProxy instances.
+    pub(crate) fn create_shared_op_state() -> Arc<RwLock<OpState>> {
+        Arc::new(RwLock::new(OpState::Uninitialized))
     }
 
     /// Set the socket path for identification
