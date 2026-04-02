@@ -402,52 +402,160 @@ impl WardProxy {
             let vault = source.vault.clone();
             let item = source.item.clone();
 
-            // op CLI calls are blocking — run in spawn_blocking
+            // Step 1: op item list → fingerprint → itemid map
             let key_infos = tokio::task::spawn_blocking(move || {
                 op::list_ssh_keys(vault.as_deref(), item.as_deref())
             })
             .await
             .map_err(|e| Error::KeyStore(format!("spawn_blocking failed: {}", e)))??;
 
-            // Fetch all public keys in parallel
-            let mut fetch_tasks = Vec::new();
-            for info in key_infos {
-                let item_id = info.item_id.clone();
-                let title = info.title.clone();
-                let task = tokio::task::spawn_blocking(move || {
-                    let pub_key_str = op::get_public_key(&item_id)?;
-                    Ok::<_, Error>((item_id, title, pub_key_str))
-                });
-                fetch_tasks.push(task);
+            // Build fingerprint → (itemid, title) map
+            let mut fp_to_info: HashMap<String, (String, String)> = HashMap::new();
+            for info in &key_infos {
+                fp_to_info.insert(
+                    info.fingerprint.clone(),
+                    (info.item_id.clone(), info.title.clone()),
+                );
             }
 
-            for task in fetch_tasks {
-                let (item_id, title, pub_key_str) = task
-                    .await
-                    .map_err(|e| Error::KeyStore(format!("spawn_blocking failed: {}", e)))??;
+            info!(
+                count = key_infos.len(),
+                "op item list returned SSH keys, resolving public keys..."
+            );
 
-                let pub_key = PublicKey::from_openssh(&pub_key_str).map_err(|e| {
-                    Error::KeyStore(format!("Failed to parse public key for '{}': {}", title, e))
-                })?;
+            // Step 2: Try 1Password agent socket for fast public key resolution
+            let agent_resolved = self.resolve_keys_via_agent(&fp_to_info).await;
+            let mut resolved_fps: HashSet<String> = HashSet::new();
 
-                let key_blob = Bytes::from(pub_key.to_bytes().map_err(|e| {
-                    Error::KeyStore(format!(
-                        "Failed to encode public key for '{}': {}",
-                        title, e
-                    ))
-                })?);
+            if let Ok(ref agent_keys) = agent_resolved {
+                for (fp, (key_blob, item_id, title)) in agent_keys {
+                    resolved_fps.insert(fp.clone());
+                    debug!(title = %title, "Resolved via 1Password agent");
+                    keys.insert(
+                        key_blob.clone(),
+                        OpManagedKey {
+                            item_id: item_id.clone(),
+                            title: title.clone(),
+                        },
+                    );
+                }
+            }
 
-                debug!(
-                    title = %title,
-                    item_id = %item_id,
-                    "Discovered op SSH key"
+            // Step 3: Fetch remaining keys via op item get (parallel)
+            let remaining: Vec<_> = key_infos
+                .iter()
+                .filter(|info| !resolved_fps.contains(&info.fingerprint))
+                .collect();
+
+            if !remaining.is_empty() {
+                info!(
+                    count = remaining.len(),
+                    "Fetching remaining keys via op item get..."
                 );
 
-                keys.insert(key_blob, OpManagedKey { item_id, title });
+                let mut fetch_tasks = Vec::new();
+                for info in remaining {
+                    let item_id = info.item_id.clone();
+                    let title = info.title.clone();
+                    let task = tokio::task::spawn_blocking(move || {
+                        let pub_key_str = op::get_public_key(&item_id)?;
+                        Ok::<_, Error>((item_id, title, pub_key_str))
+                    });
+                    fetch_tasks.push(task);
+                }
+
+                for task in fetch_tasks {
+                    let (item_id, title, pub_key_str) = task
+                        .await
+                        .map_err(|e| Error::KeyStore(format!("spawn_blocking failed: {}", e)))??;
+
+                    let pub_key = PublicKey::from_openssh(&pub_key_str).map_err(|e| {
+                        Error::KeyStore(format!(
+                            "Failed to parse public key for '{}': {}",
+                            title, e
+                        ))
+                    })?;
+
+                    let key_blob = Bytes::from(pub_key.to_bytes().map_err(|e| {
+                        Error::KeyStore(format!(
+                            "Failed to encode public key for '{}': {}",
+                            title, e
+                        ))
+                    })?);
+
+                    debug!(title = %title, item_id = %item_id, "Resolved via op item get");
+                    keys.insert(key_blob, OpManagedKey { item_id, title });
+                }
             }
         }
 
+        info!(count = keys.len(), "Op key discovery complete");
         Ok(keys)
+    }
+
+    /// Try to resolve public keys via 1Password agent socket (fast path).
+    ///
+    /// Returns map of fingerprint → (key_blob, item_id, title) for keys
+    /// that were found in the agent and matched the fingerprint map.
+    async fn resolve_keys_via_agent(
+        &self,
+        fp_to_info: &HashMap<String, (String, String)>,
+    ) -> Result<HashMap<String, (Bytes, String, String)>> {
+        use ssh_key::HashAlg;
+
+        let agent_socket = onepassword_agent_socket();
+        let Some(agent_path) = agent_socket else {
+            debug!("1Password agent socket not found, skipping fast path");
+            return Ok(HashMap::new());
+        };
+
+        // Connect to 1Password agent and send REQUEST_IDENTITIES
+        let upstream = Upstream::new(&agent_path);
+        let mut conn = match upstream.connect().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                debug!(error = %e, "Cannot connect to 1Password agent, skipping fast path");
+                return Ok(HashMap::new());
+            }
+        };
+
+        let request = AgentMessage::new(MessageType::RequestIdentities, Bytes::new());
+        let response = match conn.send_receive(&request).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                debug!(error = %e, "1Password agent request failed, skipping fast path");
+                return Ok(HashMap::new());
+            }
+        };
+
+        if response.msg_type != MessageType::IdentitiesAnswer {
+            return Ok(HashMap::new());
+        }
+
+        let identities = response.parse_identities().unwrap_or_default();
+        let mut result = HashMap::new();
+
+        for identity in identities {
+            if let Some(pub_key) = &identity.public_key {
+                let fp = pub_key.fingerprint(HashAlg::Sha256);
+                let fp_str = fp.to_string();
+
+                if let Some((item_id, title)) = fp_to_info.get(&fp_str) {
+                    result.insert(
+                        fp_str,
+                        (identity.key_blob.clone(), item_id.clone(), title.clone()),
+                    );
+                }
+            }
+        }
+
+        debug!(
+            resolved = result.len(),
+            total = fp_to_info.len(),
+            "Resolved keys via 1Password agent"
+        );
+
+        Ok(result)
     }
 
     // ---- Upstream forwarding ----
@@ -466,6 +574,27 @@ impl WardProxy {
             }
         }
     }
+}
+
+/// Get the platform-specific 1Password SSH agent socket path.
+///
+/// Returns None if the socket doesn't exist.
+fn onepassword_agent_socket() -> Option<std::path::PathBuf> {
+    let home = dirs::home_dir()?;
+
+    #[cfg(target_os = "macos")]
+    let path = home.join("Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock");
+
+    #[cfg(target_os = "linux")]
+    let path = home.join(".1password/agent.sock");
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let path = {
+        let _ = home;
+        return None;
+    };
+
+    if path.exists() { Some(path) } else { None }
 }
 
 #[cfg(test)]
