@@ -26,8 +26,6 @@ run *args:
 # Finalize a release: describe current change, new, bookmark, tag, push
 # Use after version bump and CHANGELOG update are in the working copy
 finalize-release version:
-    #!/usr/bin/env bash
-    set -euo pipefail
     jj describe -m "Release v{{version}}"
     jj new
     jj bookmark set main -r @-
@@ -38,8 +36,6 @@ finalize-release version:
 
 # Push a git tag (jj doesn't support tag push natively)
 push-tag tag:
-    #!/usr/bin/env bash
-    set -euo pipefail
     jj git export
     GIT_WORK_TREE="$(pwd)" git --git-dir="$(jj root)/../.git" push origin "{{tag}}"
 
