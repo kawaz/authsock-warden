@@ -50,6 +50,8 @@ struct OpManagedKey {
     item_id: String,
     /// Human-readable title (used as identity comment)
     title: String,
+    /// Cached private key (lazy loaded on first sign, zeroized on drop)
+    cached_private_key: Option<ssh_key::PrivateKey>,
 }
 
 /// Which backend handles signing for a given key
@@ -312,7 +314,8 @@ impl WardProxy {
         match backend {
             Some(SigningBackend::Agent) => self.forward_to_upstream(request).await,
             Some(SigningBackend::Op { item_id }) => {
-                self.sign_with_op(&item_id, &request.payload).await
+                self.sign_with_op(&key_blob, &item_id, &request.payload)
+                    .await
             }
             None => {
                 // Key not in our backend map — try upstream as fallback
@@ -328,26 +331,49 @@ impl WardProxy {
 
     /// Sign data locally using an op-managed key.
     ///
-    /// Fetches the private key from 1Password (triggering TouchID),
-    /// parses it, and signs the data.
+    /// Uses cached private key if available, otherwise fetches from 1Password
+    /// and caches for subsequent signatures.
     async fn sign_with_op(
         &self,
+        key_blob: &Bytes,
         item_id: &str,
         sign_request_payload: &Bytes,
     ) -> Result<AgentMessage> {
-        let item_id = item_id.to_string();
-        let payload = sign_request_payload.clone();
+        // Check for cached private key
+        {
+            let state = self.op_state.read().await;
+            if let OpState::Ready { keys } = &*state
+                && let Some(managed) = keys.get(key_blob)
+                && let Some(ref private_key) = managed.cached_private_key
+            {
+                debug!(item_id = %item_id, "Signing with cached private key");
+                return signer::sign_with_key(private_key, sign_request_payload);
+            }
+        }
 
+        // Fetch private key via op CLI (may trigger TouchID)
+        let item_id_owned = item_id.to_string();
         debug!(item_id = %item_id, "Signing with op-managed key (fetching private key)");
 
-        // Fetch private key via op CLI (blocking — may trigger TouchID)
-        let pem = tokio::task::spawn_blocking(move || op::get_private_key(&item_id))
+        let pem = tokio::task::spawn_blocking(move || op::get_private_key(&item_id_owned))
             .await
             .map_err(|e| Error::KeyStore(format!("spawn_blocking failed: {}", e)))??;
 
-        // Parse and sign
         let private_key = signer::parse_private_key(&pem)?;
-        signer::sign_with_key(&private_key, &payload)
+        let result = signer::sign_with_key(&private_key, sign_request_payload);
+
+        // Cache the private key for future use
+        {
+            let mut state = self.op_state.write().await;
+            if let OpState::Ready { keys } = &mut *state
+                && let Some(managed) = keys.get_mut(key_blob)
+            {
+                managed.cached_private_key = Some(private_key);
+                debug!(item_id = %item_id, "Cached private key for future signatures");
+            }
+        }
+
+        result
     }
 
     // ---- Op lazy initialization ----
@@ -456,6 +482,7 @@ impl WardProxy {
                         OpManagedKey {
                             item_id: item_id.clone(),
                             title: title.clone(),
+                            cached_private_key: None,
                         },
                     );
                     new_cache_keys.push(CachedKey {
@@ -491,6 +518,7 @@ impl WardProxy {
                         OpManagedKey {
                             item_id: item_id.clone(),
                             title: title.clone(),
+                            cached_private_key: None,
                         },
                     );
                     // Reconstruct public key string for cache
@@ -558,6 +586,7 @@ impl WardProxy {
                         OpManagedKey {
                             item_id: item_id.clone(),
                             title: title.clone(),
+                            cached_private_key: None,
                         },
                     );
 
@@ -664,6 +693,7 @@ impl WardProxy {
                                 OpManagedKey {
                                     item_id: cached.item_id.clone(),
                                     title: cached.title.clone(),
+                                    cached_private_key: None,
                                 },
                             );
                             added += 1;
