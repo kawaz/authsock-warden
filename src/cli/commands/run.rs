@@ -25,7 +25,13 @@ pub async fn execute(args: RunArgs, config_path: Option<PathBuf>) -> anyhow::Res
 
     if config.sockets.is_empty() {
         anyhow::bail!(
-            "No sockets defined. Use --socket PATH or add [sockets.NAME] to config file."
+            "No sockets defined.\n\n\
+             Quick start:\n  \
+               authsock-warden run --socket /tmp/authsock-warden.sock\n  \
+               authsock-warden run --source op:// --socket /tmp/authsock-warden.sock\n\n\
+             Or create a config file:\n  \
+               authsock-warden config edit\n\n\
+             See 'authsock-warden run --help' for more options."
         );
     }
 

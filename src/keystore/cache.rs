@@ -87,9 +87,16 @@ impl OpKeyCache {
 
         match serde_json::to_string_pretty(self) {
             Ok(content) => {
-                if let Err(e) = std::fs::write(&path, content) {
+                if let Err(e) = std::fs::write(&path, &content) {
                     warn!(error = %e, "Failed to write op key cache");
                 } else {
+                    // Set permissions to 0600 (owner read/write only)
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ =
+                            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+                    }
                     debug!(keys = self.keys.len(), path = %path.display(), "Saved op key cache");
                 }
             }
