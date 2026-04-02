@@ -2,6 +2,7 @@
 //! and 1Password integration.
 
 pub mod agent;
+pub mod config;
 pub mod error;
 pub mod filter;
 pub mod protocol;
