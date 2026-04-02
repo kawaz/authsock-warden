@@ -6,6 +6,9 @@ authors = ["Yoshiaki Kawazu <kawazzz@gmail.com>"]
 license = "MIT"
 description = "SSH agent proxy with key filtering, process-aware access control, and 1Password integration"
 repository = "https://github.com/kawaz/authsock-warden"
+keywords = ["ssh", "agent", "1password", "security", "proxy"]
+categories = ["authentication", "command-line-utilities"]
+readme = "README.md"
 
 [[bin]]
 name = "authsock-warden"
