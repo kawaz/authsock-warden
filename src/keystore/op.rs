@@ -8,8 +8,17 @@
 //! SIGN_REQUEST triggers the initial discovery.
 
 use crate::error::{Error, Result};
-use serde::Deserialize;
 use std::process::Command;
+
+/// Create an `op` command with account selection if OP_ACCOUNT is set.
+fn op_command() -> Command {
+    let mut cmd = Command::new("op");
+    if let Ok(account) = std::env::var("OP_ACCOUNT") {
+        cmd.args(["--account", &account]);
+    }
+    cmd
+}
+use serde::Deserialize;
 use tracing::{debug, info};
 
 /// An SSH key item discovered from 1Password
@@ -56,7 +65,7 @@ pub fn list_ssh_keys(
     vault_filter: Option<&str>,
     item_filter: Option<&str>,
 ) -> Result<Vec<OpKeyInfo>> {
-    let mut cmd = Command::new("op");
+    let mut cmd = op_command();
     cmd.args([
         "item",
         "list",
@@ -139,7 +148,7 @@ fn validate_item_id(item_id: &str) -> Result<()> {
 pub fn get_public_key(item_id: &str) -> Result<String> {
     validate_item_id(item_id)?;
     debug!(item_id, "Fetching public key from 1Password");
-    let output = Command::new("op")
+    let output = op_command()
         .args([
             "item",
             "get",
@@ -172,7 +181,7 @@ pub fn get_public_key(item_id: &str) -> Result<String> {
 pub fn get_private_key(item_id: &str) -> Result<String> {
     validate_item_id(item_id)?;
     debug!(item_id, "Fetching private key from 1Password");
-    let output = Command::new("op")
+    let output = op_command()
         .args([
             "item",
             "get",

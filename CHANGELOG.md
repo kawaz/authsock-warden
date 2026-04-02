@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-04-03
+
+### Fixed
+
+- Support OP_ACCOUNT environment variable for multi-account 1Password setups
+- All op CLI calls now use centralized op_command() helper with account selection
+
 ## [0.1.2] - 2026-04-03
 
 ### Fixed
