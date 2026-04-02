@@ -208,6 +208,11 @@ impl WardProxy {
             self.refresh_op_keys_from_agent().await;
         }
 
+        // Ensure async filters are loaded (GitHub keys, keyfile reload, etc.)
+        if let Err(e) = self.filter.ensure_loaded().await {
+            warn!(error = %e, "Failed to load async filters");
+        }
+
         let mut all_identities: Vec<Identity> = Vec::new();
         let mut new_backend_map: HashMap<Bytes, SigningBackend> = HashMap::new();
 
