@@ -409,18 +409,23 @@ impl WardProxy {
             .await
             .map_err(|e| Error::KeyStore(format!("spawn_blocking failed: {}", e)))??;
 
+            // Fetch all public keys in parallel
+            let mut fetch_tasks = Vec::new();
             for info in key_infos {
                 let item_id = info.item_id.clone();
                 let title = info.title.clone();
+                let task = tokio::task::spawn_blocking(move || {
+                    let pub_key_str = op::get_public_key(&item_id)?;
+                    Ok::<_, Error>((item_id, title, pub_key_str))
+                });
+                fetch_tasks.push(task);
+            }
 
-                // Fetch public key to get wire-format blob
-                let id_for_fetch = item_id.clone();
-                let pub_key_str =
-                    tokio::task::spawn_blocking(move || op::get_public_key(&id_for_fetch))
-                        .await
-                        .map_err(|e| Error::KeyStore(format!("spawn_blocking failed: {}", e)))??;
+            for task in fetch_tasks {
+                let (item_id, title, pub_key_str) = task
+                    .await
+                    .map_err(|e| Error::KeyStore(format!("spawn_blocking failed: {}", e)))??;
 
-                // Parse OpenSSH public key string to get wire-format key_blob
                 let pub_key = PublicKey::from_openssh(&pub_key_str).map_err(|e| {
                     Error::KeyStore(format!("Failed to parse public key for '{}': {}", title, e))
                 })?;
