@@ -10,23 +10,20 @@ pub struct RunArgs {
     ///
     /// Format: --source [NAME=]MEMBER[,MEMBER...]
     ///
-    /// Each --source starts a new group. Subsequent --socket definitions
-    /// belong to that group until the next --source.
+    /// Each --source starts a new group. Subsequent --socket
+    /// definitions belong to that group until the next --source.
     ///
     /// Member types:
-    ///   op://              All 1Password SSH keys (warden signs locally)
-    ///   op://vault         SSH keys in a specific vault
-    ///   op://vault/item    A specific SSH key
-    ///   agent:PATH         Proxy to an SSH agent socket
-    ///   file:PATH          Load private key from file
-    ///   PATH               Auto-detect: socket → agent, file → key
     ///
-    /// Examples:
-    ///   --source op://emerada,~/Library/.../agent.sock
-    ///   --source work=op://,file:~/.ssh/id_work
+    ///   op://            All 1Password SSH keys
+    ///   op://vault       Keys in a specific vault
+    ///   op://vault/item  A specific key
+    ///   agent:PATH       Proxy to SSH agent socket
+    ///   file:PATH        Load private key from file
+    ///   PATH             Auto-detect (socket/file)
     ///
-    /// If omitted, $SSH_AUTH_SOCK is used as default agent source.
-    #[arg(long, num_args = 1, action = clap::ArgAction::Append)]
+    /// If omitted, $SSH_AUTH_SOCK is used as default source.
+    #[arg(long, num_args = 1, action = clap::ArgAction::Append, verbatim_doc_comment)]
     pub source: Vec<String>,
 
     /// Socket path to listen on
