@@ -17,6 +17,7 @@ use ssh_key::PublicKey;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::{debug, info, trace, warn};
 
@@ -40,8 +41,8 @@ pub(crate) enum OpState {
         /// Op-managed keys indexed by wire-format key_blob
         keys: HashMap<Bytes, OpManagedKey>,
     },
-    /// Initialization failed
-    Failed(String),
+    /// Initialization failed (will retry after timeout)
+    Failed { error: String, failed_at: Instant },
 }
 
 /// A key managed by 1Password
@@ -402,16 +403,27 @@ impl WardProxy {
     // ---- Op lazy initialization ----
 
     /// Ensure op keys are discovered. Called once on first REQUEST_IDENTITIES.
+    /// If a previous attempt failed, retries after 60 seconds.
     async fn ensure_op_initialized(&self) {
+        const RETRY_INTERVAL: Duration = Duration::from_secs(60);
+
         // Fast path: already initialized
         {
             let state = self.op_state.read().await;
             match &*state {
                 OpState::Uninitialized => {} // fall through to slow path
                 OpState::Ready { .. } => return,
-                OpState::Failed(err) => {
-                    debug!(error = %err, "Op key discovery previously failed, skipping");
-                    return;
+                OpState::Failed { error, failed_at } => {
+                    if failed_at.elapsed() < RETRY_INTERVAL {
+                        warn!(
+                            error = %error,
+                            retry_in_secs = (RETRY_INTERVAL - failed_at.elapsed()).as_secs(),
+                            "Op key discovery previously failed, will retry later"
+                        );
+                        return;
+                    }
+                    // Retry interval elapsed, fall through to reinitialize
+                    info!("Retrying op key discovery after previous failure");
                 }
             }
         }
@@ -419,8 +431,10 @@ impl WardProxy {
         // Slow path: discover keys
         let mut state = self.op_state.write().await;
         // Double-check after acquiring write lock
-        if !matches!(&*state, OpState::Uninitialized) {
-            return;
+        match &*state {
+            OpState::Ready { .. } => return,
+            OpState::Failed { failed_at, .. } if failed_at.elapsed() < RETRY_INTERVAL => return,
+            _ => {} // Uninitialized or expired Failed — proceed
         }
 
         if self.op_sources.is_empty() {
@@ -440,7 +454,10 @@ impl WardProxy {
             }
             Err(e) => {
                 warn!(error = %e, "Op key discovery failed");
-                *state = OpState::Failed(e.to_string());
+                *state = OpState::Failed {
+                    error: e.to_string(),
+                    failed_at: Instant::now(),
+                };
             }
         }
     }
@@ -472,15 +489,20 @@ impl WardProxy {
             .await
             .map_err(|e| Error::KeyStore(format!("spawn_blocking failed: {}", e)))??;
 
-            let mut fp_to_info: HashMap<String, (String, String, String)> = HashMap::new();
+            struct FpKeyInfo {
+                item_id: String,
+                title: String,
+                vault_name: String,
+            }
+            let mut fp_to_info: HashMap<String, FpKeyInfo> = HashMap::new();
             for info in &key_infos {
                 fp_to_info.insert(
                     info.fingerprint.clone(),
-                    (
-                        info.item_id.clone(),
-                        info.title.clone(),
-                        info.vault_name.clone(),
-                    ),
+                    FpKeyInfo {
+                        item_id: info.item_id.clone(),
+                        title: info.title.clone(),
+                        vault_name: info.vault_name.clone(),
+                    },
                 );
             }
 
@@ -492,7 +514,9 @@ impl WardProxy {
             let mut resolved_fps: HashSet<String> = HashSet::new();
 
             // Step 2: Try disk cache for instant resolution
-            for (fp, (item_id, title, vault_name)) in &fp_to_info {
+            for (fp, fp_info) in &fp_to_info {
+                let (item_id, title, vault_name) =
+                    (&fp_info.item_id, &fp_info.title, &fp_info.vault_name);
                 if let Some(cached) = cache_map.get(fp.as_str())
                     && let Ok(pub_key) = PublicKey::from_openssh(&cached.public_key)
                     && let Ok(blob) = pub_key.to_bytes()
@@ -527,7 +551,7 @@ impl WardProxy {
             let remaining_fp_to_info: HashMap<String, (String, String)> = fp_to_info
                 .iter()
                 .filter(|(fp, _)| !resolved_fps.contains(fp.as_str()))
-                .map(|(fp, (id, title, _))| (fp.clone(), (id.clone(), title.clone())))
+                .map(|(fp, info)| (fp.clone(), (info.item_id.clone(), info.title.clone())))
                 .collect();
 
             let agent_resolved = self.resolve_keys_via_agent(&remaining_fp_to_info).await;
@@ -548,7 +572,7 @@ impl WardProxy {
                     if let Ok(pub_key) = PublicKey::from_bytes(key_blob) {
                         let vault_name = fp_to_info
                             .get(fp)
-                            .map(|(_, _, v)| v.as_str())
+                            .map(|info| info.vault_name.as_str())
                             .unwrap_or("Unknown");
                         new_cache_keys.push(CachedKey {
                             item_id: item_id.clone(),

@@ -47,14 +47,23 @@ pub fn sign_with_key(
     let data = &buf[..data_len];
     buf.advance(data_len);
 
-    // Read flags (optional, not used for basic signing)
-    let _flags = if buf.remaining() >= 4 {
+    // Read flags (optional)
+    // SSH agent protocol flags for RSA key type selection:
+    //   SSH_AGENT_RSA_SHA2_256 = 0x02
+    //   SSH_AGENT_RSA_SHA2_512 = 0x04
+    // Ed25519 keys ignore flags (algorithm is fixed).
+    // TODO: RSA SHA2 flags are not yet supported; RSA keys should use agent proxy mode.
+    let flags = if buf.remaining() >= 4 {
         buf.get_u32()
     } else {
         0
     };
 
-    debug!(data_len = data.len(), "Signing data locally");
+    if flags != 0 {
+        debug!(flags = flags, "Sign request flags present");
+    }
+
+    debug!(data_len = data.len(), flags = flags, "Signing data locally");
 
     // Sign using the ssh-key crate's Signer trait
     let signature: ssh_key::Signature = private_key
@@ -80,21 +89,28 @@ pub fn sign_with_key(
 /// Parse a PEM private key string into an ssh-key PrivateKey.
 ///
 /// Supports:
-/// - OpenSSH format ("BEGIN OPENSSH PRIVATE KEY")
-/// - PKCS#8 Ed25519 format ("BEGIN PRIVATE KEY") as returned by 1Password
+/// - OpenSSH format ("BEGIN OPENSSH PRIVATE KEY") — any key type supported by ssh-key crate
+/// - PKCS#8 format ("BEGIN PRIVATE KEY") — **Ed25519 only** (as returned by 1Password)
+///
+/// PKCS#8 RSA or ECDSA keys are not supported by the PKCS#8 path.
+/// For those key types, use OpenSSH format or agent proxy mode.
 pub fn parse_private_key(pem: &str) -> Result<PrivateKey> {
-    // Try OpenSSH format first
+    // Try OpenSSH format first (supports all key types)
     if let Ok(key) = PrivateKey::from_openssh(pem) {
         return Ok(key);
     }
 
     // Try PKCS#8 PEM format (1Password returns "BEGIN PRIVATE KEY")
+    // Only Ed25519 is supported via this path.
     if pem.contains("BEGIN PRIVATE KEY") {
         return parse_pkcs8_ed25519(pem);
     }
 
     Err(Error::KeyStore(
-        "Failed to parse private key: unsupported PEM format".to_string(),
+        "Failed to parse private key: unsupported format. \
+         Expected OpenSSH (\"BEGIN OPENSSH PRIVATE KEY\") or \
+         PKCS#8 Ed25519 (\"BEGIN PRIVATE KEY\")"
+            .to_string(),
     ))
 }
 

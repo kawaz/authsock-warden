@@ -121,10 +121,23 @@ fn parse_item_list(entries: Vec<OpItemListEntry>) -> Vec<OpKeyInfo> {
         .collect()
 }
 
+/// Validate that an item ID is safe to pass to the op CLI.
+///
+/// 1Password item IDs are 26-character alphanumeric strings.
+/// This prevents injection of CLI flags (e.g., item_id starting with "--").
+fn validate_item_id(item_id: &str) -> Result<()> {
+    if !item_id.is_empty() && item_id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        Ok(())
+    } else {
+        Err(Error::KeyStore(format!("Invalid item ID: {}", item_id)))
+    }
+}
+
 /// Get the public key for an item.
 ///
 /// Returns the public key in OpenSSH format (e.g., "ssh-ed25519 AAAA...").
 pub fn get_public_key(item_id: &str) -> Result<String> {
+    validate_item_id(item_id)?;
     debug!(item_id, "Fetching public key from 1Password");
     let output = Command::new("op")
         .args([
@@ -157,6 +170,7 @@ pub fn get_public_key(item_id: &str) -> Result<String> {
 ///
 /// Returns the private key in PEM format (typically PKCS#8 "BEGIN PRIVATE KEY").
 pub fn get_private_key(item_id: &str) -> Result<String> {
+    validate_item_id(item_id)?;
     debug!(item_id, "Fetching private key from 1Password");
     let output = Command::new("op")
         .args([
@@ -352,5 +366,32 @@ mod tests {
         let entries: Vec<OpItemListEntry> = serde_json::from_str(json).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, "id1");
+    }
+
+    // --- validate_item_id tests ---
+
+    #[test]
+    fn validate_item_id_accepts_alphanumeric() {
+        assert!(validate_item_id("zl4nsgmrs73isw6mlc464tpecy").is_ok());
+        assert!(validate_item_id("abc123").is_ok());
+        assert!(validate_item_id("A").is_ok());
+    }
+
+    #[test]
+    fn validate_item_id_rejects_empty() {
+        assert!(validate_item_id("").is_err());
+    }
+
+    #[test]
+    fn validate_item_id_rejects_flag_injection() {
+        assert!(validate_item_id("--vault").is_err());
+        assert!(validate_item_id("-h").is_err());
+    }
+
+    #[test]
+    fn validate_item_id_rejects_special_chars() {
+        assert!(validate_item_id("abc;rm -rf /").is_err());
+        assert!(validate_item_id("abc def").is_err());
+        assert!(validate_item_id("abc/def").is_err());
     }
 }
