@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-04-03
+
+### Added
+
+- op_account config field for multi-account 1Password setups
+- op_account embedded in launchd plist EnvironmentVariables on service register
+
+### Fixed
+
+- PKCS#8 parser: added design rationale comment for 1Password compatibility
+
+
 ## [0.1.4] - 2026-04-03
 
 ### Fixed
