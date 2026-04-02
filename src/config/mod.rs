@@ -127,10 +127,18 @@ pub enum SourceMember {
         /// Path to the private key file
         path: String,
     },
+    /// Bare path — type not yet determined. Resolved at startup via `resolve()`.
+    Unresolved {
+        /// The raw path string
+        path: String,
+    },
 }
 
 impl SourceMember {
-    /// Parse a member string into a typed SourceMember
+    /// Parse a member string into a typed SourceMember.
+    ///
+    /// Bare paths (no prefix) are stored as `Unresolved` and must be
+    /// resolved at startup via `resolve()` which checks the file type.
     pub fn parse(s: &str) -> crate::error::Result<Self> {
         // op:// scheme
         if let Some(rest) = s.strip_prefix("op://") {
@@ -155,11 +163,57 @@ impl SourceMember {
                 path: path.to_string(),
             });
         }
-        // No prefix: store as-is, auto-detection deferred to runtime
-        // Default to agent (most common bare path case is a socket)
-        Ok(SourceMember::Agent {
-            socket: s.to_string(),
+        // No prefix: defer type detection to runtime
+        Ok(SourceMember::Unresolved {
+            path: s.to_string(),
         })
+    }
+
+    /// Resolve an `Unresolved` member by checking the file type at the given path.
+    ///
+    /// - Unix socket → `Agent`
+    /// - Regular file → `File`
+    /// - Path not found or other → error (fail-closed per DR-010)
+    ///
+    /// Already-resolved members are returned as-is.
+    pub fn resolve(&self) -> crate::error::Result<Self> {
+        let SourceMember::Unresolved { path } = self else {
+            return Ok(self.clone());
+        };
+
+        let expanded = crate::utils::path::expand_path(path)?;
+        let metadata = std::fs::metadata(&expanded).map_err(|e| {
+            crate::error::Error::Config(format!(
+                "Cannot access source member '{}': {}. Use agent: or file: prefix to specify type explicitly.",
+                path, e
+            ))
+        })?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileTypeExt;
+            if metadata.file_type().is_socket() {
+                tracing::info!(path = %expanded, "Auto-detected source member as agent socket");
+                return Ok(SourceMember::Agent {
+                    socket: path.clone(),
+                });
+            }
+        }
+
+        if metadata.is_file() {
+            tracing::info!(path = %expanded, "Auto-detected source member as key file");
+            return Ok(SourceMember::File { path: path.clone() });
+        }
+
+        Err(crate::error::Error::Config(format!(
+            "'{}' is neither a socket nor a regular file. Use agent: or file: prefix.",
+            path
+        )))
+    }
+
+    /// Check if this member is unresolved
+    pub fn is_unresolved(&self) -> bool {
+        matches!(self, SourceMember::Unresolved { .. })
     }
 
     /// Description for logging
@@ -178,6 +232,7 @@ impl SourceMember {
             }
             SourceMember::Agent { socket } => format!("agent:{}", socket),
             SourceMember::File { path } => format!("file:{}", path),
+            SourceMember::Unresolved { path } => format!("unresolved:{}", path),
         }
     }
 }
@@ -656,13 +711,14 @@ mod tests {
 
     #[test]
     fn test_source_member_parse_bare_path() {
-        // Bare path defaults to Agent (auto-detection deferred to runtime)
+        // Bare path is Unresolved (auto-detection deferred to runtime)
         let member = SourceMember::parse("/tmp/agent.sock").unwrap();
-        match member {
-            SourceMember::Agent { socket } => {
-                assert_eq!(socket, "/tmp/agent.sock");
+        assert!(member.is_unresolved());
+        match &member {
+            SourceMember::Unresolved { path } => {
+                assert_eq!(path, "/tmp/agent.sock");
             }
-            _ => panic!("Expected Agent variant for bare path"),
+            _ => panic!("Expected Unresolved variant for bare path"),
         }
     }
 
@@ -748,7 +804,7 @@ members = ["op://", "agent:/tmp/agent.sock", "file:~/.ssh/id_work", "/tmp/bare.s
         );
         assert!(matches!(&members[2], SourceMember::File { path } if path == "~/.ssh/id_work"));
         assert!(
-            matches!(&members[3], SourceMember::Agent { socket } if socket == "/tmp/bare.sock")
+            matches!(&members[3], SourceMember::Unresolved { path } if path == "/tmp/bare.sock")
         );
     }
 

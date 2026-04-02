@@ -128,7 +128,9 @@ fn resolve_upstream(
             && let Ok(members) = source.parse_members()
         {
             for member in &members {
-                if let SourceMember::Agent { socket } = member {
+                // Resolve unresolved members first
+                let resolved = member.resolve().unwrap_or_else(|_| member.clone());
+                if let SourceMember::Agent { socket } = &resolved {
                     let expanded = expand_path(socket)?;
                     return Ok(Upstream::new(expanded));
                 }
