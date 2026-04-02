@@ -39,7 +39,7 @@ sources = ["work-agent", "work-files"]
 ```toml
 [[sources]]
 name = "work"
-members = ["op:////", "~/Library/.../agent.sock", "~/.ssh/id_work"]
+members = ["op://", "~/Library/.../agent.sock", "~/.ssh/id_work"]
 
 [sockets.work]
 source = "work"
@@ -69,14 +69,23 @@ op = true
 
 | 記法 | 意味 | 例 |
 |---|---|---|
-| `op:////` | 全 vault の全 SSH 鍵（op CLI で管理、warden がローカル署名） | `op:////` |
-| `op:////VAULT` | 指定 vault の SSH 鍵のみ | `op:////emerada` |
-| `op:////VAULT/ITEM` | 特定の鍵のみ | `op:////Private/kawaz-mbp-key` |
+| `op://` | 全 vault の全 SSH 鍵（op CLI で管理、warden がローカル署名） | `op://` |
+| `op://VAULT` | 指定 vault の SSH 鍵のみ（名前 or ID） | `op://emerada` |
+| `op://VAULT/ITEM` | 特定の鍵のみ（名前 or ID） | `op://Private/kawaz-mbp-key` |
 | `agent:PATH` | SSH agent ソケットに転送（明示指定） | `agent:~/.ssh/agent.sock` |
 | `file:PATH` | 秘密鍵ファイルから読み込み（明示指定） | `file:~/.ssh/id_work` |
 | `PATH`（プレフィックスなし） | パスの種類で自動判定: socket → agent、通常ファイル → file | `~/.ssh/id_work` |
 
-`op:////` 記法は 1Password 公式の secret reference 形式（`op:////vault/item/field`）と一致しており、op CLI ユーザーに馴染みがある。
+#### op:// 記法について
+
+1Password 公式の secret reference 形式は `op://vault/item/[section/]field` で、特定のフィールド値を取得するもの。warden はこれを **SSH 鍵スコープのショートカットとして独自拡張** する:
+
+- 公式: `op://vault/item/field` — 常に vault + item + field の3要素が必要
+- warden: `op://[vault[/item]]` — vault や item を省略して SSH 鍵カテゴリ全体を対象にできる
+
+vault/item 指定には名前と ID（26文字英数字）のどちらも使える（case-insensitive）。スペースを含む名前は引用符で囲む（例: `"op://My Vault/My Key"`）。
+
+公式の `op://` ではワイルドカード・正規表現・カテゴリフィルタは使えない。warden は `op item list --categories SSH_KEY` で SSH 鍵に限定した上で vault/item のマッチングを行う。
 
 自動判定により、ほとんどの場合 type プレフィックスは不要。
 
