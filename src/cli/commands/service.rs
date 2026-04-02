@@ -298,10 +298,11 @@ mod launchd {
         ];
 
         let mut env = HashMap::new();
-        env.insert(
-            "PATH".to_string(),
-            "/usr/local/bin:/usr/bin:/bin".to_string(),
-        );
+        // Include current PATH to ensure op CLI and other tools are accessible
+        // launchd only provides /usr/bin:/bin by default
+        let path =
+            std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".to_string());
+        env.insert("PATH".to_string(), path);
 
         let log_dir = log_dir(name)?;
         let log_path = log_dir.join("output.log");
