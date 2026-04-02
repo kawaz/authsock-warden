@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-04-03
+
+### Fixed
+
+- Include user's PATH in launchd plist so `op` CLI is accessible when running as a service
+- Call `filter.ensure_loaded()` in WardProxy (fixes github= and keyfile= filters not working)
+- Share op_state across all WardProxy instances (single TouchID for multiple sockets)
+- Validate op item_id before passing to CLI (prevent option injection)
+- OpState::Failed auto-retries after 60 seconds (no longer requires restart)
+
 ## [0.1.1] - 2026-04-03
 
 ### Added
