@@ -23,6 +23,13 @@ check: fmt-check lint test
 run *args:
     cargo run -- {{args}}
 
+# Push a git tag (jj doesn't support tag push natively)
+push-tag tag:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jj git export
+    GIT_WORK_TREE="$(pwd)" git --git-dir="$(jj root)/../.git" push origin "{{tag}}"
+
 release bump="patch":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -70,8 +77,7 @@ release bump="patch":
     jj bookmark set main -r @-
     jj tag set "v${new_version}" -r @-
     jj git push --bookmark main
-    jj git export
-    GIT_WORK_TREE="$(pwd)" git --git-dir="$(jj root)/../.git" push origin "v${new_version}"
+    just push-tag "v${new_version}"
 
     # Watch workflow
     gh run watch
