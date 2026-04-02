@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-04-03
+
+### Fixed
+
+- register now calls unregister first to ensure clean process restart
+- Aligned justfile with jj-worktree/stable-which style
+
+
 ## [0.1.3] - 2026-04-03
 
 ### Fixed
