@@ -400,26 +400,12 @@ pub async fn register(args: RegisterArgs, config_override: Option<PathBuf>) -> R
         fs::create_dir_all(parent).context("Failed to create LaunchAgents directory")?;
     }
 
-    // Stop and remove existing service if present
+    // Unregister existing service if present
     if plist_path.exists() {
-        // Unload the service (stops the process)
-        let _ = std::process::Command::new("launchctl")
-            .args(["unload", plist_path_str])
-            .status();
-        fs::remove_file(&plist_path).context("Failed to remove existing plist")?;
-
-        // Wait for the old process to actually exit
-        let label = launchd::label(&args.name);
-        for _ in 0..30 {
-            let output = std::process::Command::new("launchctl")
-                .args(["list", &label])
-                .output();
-            match output {
-                Ok(o) if !o.status.success() => break, // service gone
-                _ => std::thread::sleep(std::time::Duration::from_millis(200)),
-            }
-        }
-        println!("Stopped and removed existing service");
+        unregister(UnregisterArgs {
+            name: args.name.clone(),
+        })
+        .await?;
     }
 
     // Create log directory
