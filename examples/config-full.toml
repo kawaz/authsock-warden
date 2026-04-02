@@ -2,6 +2,9 @@
 #
 # Place at: ~/.config/authsock-warden/config.toml
 
+# --- 1Password account (required if multiple accounts) ---
+# op_account = "kawaz.1password.com"
+
 # --- Policy settings ---
 [policy]
 idle_check_interval = "30s"

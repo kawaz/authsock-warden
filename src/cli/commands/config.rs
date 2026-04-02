@@ -11,6 +11,10 @@ fn default_config() -> &'static str {
     r#"# authsock-warden configuration
 # See: https://github.com/kawaz/authsock-warden
 
+# 1Password account (required if multiple accounts are configured)
+# Use the account URL or UUID from `op account list`
+# op_account = "kawaz.1password.com"
+
 # Source groups — bundle key sources under a name
 # Member types:
 #   op://            All 1Password SSH keys (warden signs locally)
