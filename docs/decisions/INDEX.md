@@ -12,6 +12,7 @@
 - [DR-008](DR-008-policy-merge-strategy.md) — ポリシーのマージ戦略: 鍵が天井、ソケットが制限（most restrictive wins）
 - [DR-009](DR-009-auth-method-command-first.md) — 認証手段: re-auth command を優先実装、LocalAuthentication/WebAuthn は将来オプション
 - [DR-010](DR-010-source-group-design.md) — source グループ設計: members で複数鍵ソースを束ねる、CLI グループ方式と対応
+- [DR-011](DR-011-op-key-discovery-strategy.md) — op 鍵発見の段階的キャッシュ戦略: agent socket リフレッシュ + ディスクキャッシュ + op item list は初回のみ
 
 ## Superseded
 
