@@ -146,44 +146,53 @@ fn resolve_upstream(
 
 /// Apply CLI arguments on top of config (CLI takes precedence)
 fn apply_cli_args(config: &mut Config, args: &RunArgs) {
-    // --upstream overrides the upstream for all sockets
-    if let Some(ref upstream) = args.upstream {
-        // Add or replace default agent source group
-        let upstream_str = upstream.display().to_string();
-        let has_cli_source = config.sources.iter().any(|s| s.name() == "_cli");
-        if !has_cli_source {
-            config.sources.push(SourceConfig {
-                name: "_cli".to_string(),
-                members: vec![format!("agent:{}", upstream_str)],
-            });
-        }
+    use crate::cli::args::CliSourceGroup;
+
+    let groups = args.parse_groups();
+    if groups.is_empty() {
+        return;
     }
 
-    // --socket adds sockets from CLI
-    let cli_sockets = args.parse_sockets();
-    for (i, (path, filters)) in cli_sockets.into_iter().enumerate() {
-        let name = if i == 0 {
-            "default".to_string()
+    for group in groups {
+        let CliSourceGroup {
+            name,
+            members,
+            sockets,
+        } = group;
+
+        // Add source group
+        let existing = config.sources.iter().position(|s| s.name() == name);
+        let source = SourceConfig {
+            name: name.clone(),
+            members,
+        };
+        if let Some(idx) = existing {
+            config.sources[idx] = source;
         } else {
-            format!("cli-{}", i)
-        };
-
-        let filter_groups: Vec<Vec<String>> = filters.into_iter().map(|f| vec![f]).collect();
-
-        let mut socket_config = crate::config::SocketConfig {
-            path,
-            source: None,
-            filters: filter_groups,
-            timeout: None,
-            allowed_processes: vec![],
-        };
-
-        // If --upstream was given, point this socket to the _cli source group
-        if args.upstream.is_some() {
-            socket_config.source = Some("_cli".to_string());
+            config.sources.push(source);
         }
 
-        config.sockets.insert(name, socket_config);
+        // Add sockets referencing this source group
+        for (i, cli_socket) in sockets.into_iter().enumerate() {
+            let socket_name = if i == 0 && name == "default" {
+                "default".to_string()
+            } else {
+                format!("{}-{}", name, i)
+            };
+
+            let filter_groups: Vec<Vec<String>> =
+                cli_socket.filters.into_iter().map(|f| vec![f]).collect();
+
+            let socket_config = crate::config::SocketConfig {
+                path: cli_socket.path,
+                source: Some(name.clone()),
+                filters: filter_groups,
+                timeout: None,
+                allowed_processes: vec![],
+            };
+
+            config.sockets.insert(socket_name, socket_config);
+        }
     }
 }
 
