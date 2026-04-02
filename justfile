@@ -23,6 +23,19 @@ check: fmt-check lint test
 run *args:
     cargo run -- {{args}}
 
+# Finalize a release: describe current change, new, bookmark, tag, push
+# Use after version bump and CHANGELOG update are in the working copy
+finalize-release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jj describe -m "Release v{{version}}"
+    jj new
+    jj bookmark set main -r @-
+    jj tag set "v{{version}}" -r @-
+    jj git push --bookmark main
+    just push-tag "v{{version}}"
+    gh run watch
+
 # Push a git tag (jj doesn't support tag push natively)
 push-tag tag:
     #!/usr/bin/env bash
@@ -71,13 +84,5 @@ release bump="patch":
         exit 1
     fi
 
-    # 3. Describe, new, bookmark, tag, push
-    jj describe -m "Release v${new_version}"
-    jj new
-    jj bookmark set main -r @-
-    jj tag set "v${new_version}" -r @-
-    jj git push --bookmark main
-    just push-tag "v${new_version}"
-
-    # Watch workflow
-    gh run watch
+    # 3. Finalize: describe, new, bookmark, tag, push, watch
+    just finalize-release "${new_version}"
