@@ -176,7 +176,7 @@ mod tests {
     fn time_until_forget_zero_or_none_when_expired() {
         let timer = KeyTimer::new(None, Some(Duration::ZERO));
         match timer.time_until_forget() {
-            None => {} // expired
+            None => {}                                // expired
             Some(d) => assert_eq!(d, Duration::ZERO), // just at the boundary
         }
     }

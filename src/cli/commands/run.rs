@@ -10,7 +10,7 @@ use crate::utils::path::expand_path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::watch;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 pub async fn execute(args: RunArgs, config_path: Option<PathBuf>) -> anyhow::Result<()> {
     // Load config from file, then overlay CLI args
@@ -161,13 +161,12 @@ fn resolve_upstream(
     socket_config: &crate::config::SocketConfig,
     config: &Config,
 ) -> anyhow::Result<Upstream> {
-    // 1. Find first agent member in the referenced source group
     if let Some(ref source_name) = socket_config.source {
+        // Source explicitly specified — only use agent members
         if let Some(source) = config.sources.iter().find(|s| s.name() == source_name)
             && let Ok(members) = source.parse_members()
         {
             for member in &members {
-                // Resolve unresolved members first
                 let resolved = member.resolve().unwrap_or_else(|_| member.clone());
                 if let SourceMember::Agent { socket } = &resolved {
                     let expanded = expand_path(socket)?;
@@ -175,13 +174,13 @@ fn resolve_upstream(
                 }
             }
         }
-        warn!(
-            source = %source_name,
-            "No agent-type member found in source group. Using SSH_AUTH_SOCK fallback."
+        anyhow::bail!(
+            "Source '{}' has no agent member. Add an agent member or use WardProxy for op-only sources.",
+            source_name
         );
     }
 
-    // 2. Fallback to SSH_AUTH_SOCK
+    // No source specified — fallback to $SSH_AUTH_SOCK
     Ok(Upstream::from_env()?)
 }
 
@@ -193,20 +192,24 @@ fn resolve_upstream_optional(
     socket_config: &crate::config::SocketConfig,
     config: &Config,
 ) -> anyhow::Result<Option<Upstream>> {
-    if let Some(ref source_name) = socket_config.source
-        && let Some(source) = config.sources.iter().find(|s| s.name() == source_name)
-        && let Ok(members) = source.parse_members()
-    {
-        for member in &members {
-            let resolved = member.resolve().unwrap_or_else(|_| member.clone());
-            if let SourceMember::Agent { socket } = &resolved {
-                let expanded = expand_path(socket)?;
-                return Ok(Some(Upstream::new(expanded)));
+    if let Some(ref source_name) = socket_config.source {
+        // Source is explicitly specified — only use agent members from it
+        if let Some(source) = config.sources.iter().find(|s| s.name() == source_name)
+            && let Ok(members) = source.parse_members()
+        {
+            for member in &members {
+                let resolved = member.resolve().unwrap_or_else(|_| member.clone());
+                if let SourceMember::Agent { socket } = &resolved {
+                    let expanded = expand_path(socket)?;
+                    return Ok(Some(Upstream::new(expanded)));
+                }
             }
         }
+        // Source specified but no agent member — no upstream (op-only is valid)
+        return Ok(None);
     }
 
-    // Try SSH_AUTH_SOCK as fallback, but return None if not available
+    // No source specified — fallback to $SSH_AUTH_SOCK
     match Upstream::from_env() {
         Ok(upstream) => Ok(Some(upstream)),
         Err(_) => Ok(None),
