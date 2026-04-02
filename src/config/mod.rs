@@ -24,7 +24,7 @@ pub struct Config {
     #[serde(default)]
     pub auth: AuthConfig,
 
-    /// Key source definitions
+    /// Key source group definitions
     #[serde(default)]
     pub sources: Vec<SourceConfig>,
 
@@ -73,45 +73,111 @@ impl Default for AuthConfig {
     }
 }
 
-/// Key source configuration
+/// Source group configuration (DR-010)
 ///
-/// Uses serde's internally-tagged enum to dispatch on the `type` field.
+/// A source group bundles multiple key sources (agents, files, op CLI)
+/// under a single name. Members are specified as URI-like strings:
+///   - `op://` — all 1Password SSH keys
+///   - `op://VAULT` — SSH keys from a specific vault
+///   - `op://VAULT/ITEM` — a specific key
+///   - `agent:PATH` — SSH agent socket (proxy mode)
+///   - `file:PATH` — private key file
+///   - `PATH` (no prefix) — auto-detect based on file type at startup
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", deny_unknown_fields)]
-pub enum SourceConfig {
-    /// Proxy to an upstream SSH agent socket
-    #[serde(rename = "agent")]
-    Agent {
-        /// Name of this source
-        name: String,
-        /// Path to the upstream agent socket
-        socket: String,
-    },
-
-    /// Keys managed by 1Password CLI (op)
-    #[serde(rename = "op")]
-    Op {
-        /// Name of this source
-        name: String,
-    },
-
-    /// Keys loaded from files
-    #[serde(rename = "file")]
-    File {
-        /// Name of this source
-        name: String,
-        /// Paths to key files
-        paths: Vec<String>,
-    },
+#[serde(deny_unknown_fields)]
+pub struct SourceConfig {
+    /// Name of this source group
+    pub name: String,
+    /// Member definitions (e.g., "op://", "agent:/path", "file:/path", "/path")
+    pub members: Vec<String>,
 }
 
 impl SourceConfig {
-    /// Get the name of this source
+    /// Get the name of this source group
     pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Parse members into typed SourceMember variants
+    pub fn parse_members(&self) -> crate::error::Result<Vec<SourceMember>> {
+        self.members
+            .iter()
+            .map(|m| SourceMember::parse(m))
+            .collect()
+    }
+}
+
+/// Parsed source member type
+#[derive(Debug, Clone)]
+pub enum SourceMember {
+    /// 1Password via op CLI (warden signs locally)
+    Op {
+        /// Optional vault filter
+        vault: Option<String>,
+        /// Optional item filter
+        item: Option<String>,
+    },
+    /// SSH agent socket (proxy mode, upstream signs)
+    Agent {
+        /// Path to the agent socket
+        socket: String,
+    },
+    /// Private key file (warden signs locally)
+    File {
+        /// Path to the private key file
+        path: String,
+    },
+}
+
+impl SourceMember {
+    /// Parse a member string into a typed SourceMember
+    pub fn parse(s: &str) -> crate::error::Result<Self> {
+        // op:// scheme
+        if let Some(rest) = s.strip_prefix("op://") {
+            let (vault, item) = match rest.split_once('/') {
+                Some((v, i)) if !v.is_empty() && !i.is_empty() => {
+                    (Some(v.to_string()), Some(i.to_string()))
+                }
+                _ if !rest.is_empty() => (Some(rest.to_string()), None),
+                _ => (None, None),
+            };
+            return Ok(SourceMember::Op { vault, item });
+        }
+        // Explicit agent: prefix
+        if let Some(path) = s.strip_prefix("agent:") {
+            return Ok(SourceMember::Agent {
+                socket: path.to_string(),
+            });
+        }
+        // Explicit file: prefix
+        if let Some(path) = s.strip_prefix("file:") {
+            return Ok(SourceMember::File {
+                path: path.to_string(),
+            });
+        }
+        // No prefix: store as-is, auto-detection deferred to runtime
+        // Default to agent (most common bare path case is a socket)
+        Ok(SourceMember::Agent {
+            socket: s.to_string(),
+        })
+    }
+
+    /// Description for logging
+    pub fn description(&self) -> String {
         match self {
-            SourceConfig::Agent { name, .. } => name,
-            SourceConfig::Op { name, .. } => name,
-            SourceConfig::File { name, .. } => name,
+            SourceMember::Op { vault, item } => {
+                let mut desc = "op://".to_string();
+                if let Some(v) = vault {
+                    desc.push_str(v);
+                    if let Some(i) = item {
+                        desc.push('/');
+                        desc.push_str(i);
+                    }
+                }
+                desc
+            }
+            SourceMember::Agent { socket } => format!("agent:{}", socket),
+            SourceMember::File { path } => format!("file:{}", path),
         }
     }
 }
@@ -124,9 +190,8 @@ pub struct SocketConfig {
     /// Supports environment variable and tilde expansion
     pub path: String,
 
-    /// Source names to include for this socket
-    #[serde(default)]
-    pub sources: Vec<String>,
+    /// Single source group reference (DR-010)
+    pub source: Option<String>,
 
     /// Filter rules for this socket
     /// Mixed format: strings are single OR terms, arrays are AND groups
@@ -144,9 +209,6 @@ pub struct SocketConfig {
     /// List of allowed process names
     #[serde(default)]
     pub allowed_processes: Vec<String>,
-
-    /// Optional upstream for agent proxy mode (backward compatibility)
-    pub upstream: Option<String>,
 }
 
 /// Per-key policy configuration
@@ -307,8 +369,8 @@ pub struct ExpandedConfig {
     /// Authentication settings
     pub auth: AuthConfig,
 
-    /// Key source definitions with expanded paths
-    pub sources: Vec<ExpandedSourceConfig>,
+    /// Key source group definitions with parsed members
+    pub sources: Vec<ExpandedSourceGroup>,
 
     /// Socket definitions with expanded paths
     pub sockets: HashMap<String, ExpandedSocketConfig>,
@@ -330,30 +392,13 @@ pub struct ExpandedPolicyConfig {
     pub idle_check_command: Option<String>,
 }
 
-/// Expanded key source configuration
+/// Expanded source group with parsed members
 #[derive(Debug, Clone)]
-pub enum ExpandedSourceConfig {
-    /// Proxy to an upstream SSH agent socket
-    Agent {
-        /// Name of this source
-        name: String,
-        /// Resolved socket path
-        socket: PathBuf,
-    },
-
-    /// Keys managed by 1Password CLI (op)
-    Op {
-        /// Name of this source
-        name: String,
-    },
-
-    /// Keys loaded from files
-    File {
-        /// Name of this source
-        name: String,
-        /// Resolved key file paths
-        paths: Vec<PathBuf>,
-    },
+pub struct ExpandedSourceGroup {
+    /// Name of this source group
+    pub name: String,
+    /// Parsed member definitions
+    pub members: Vec<SourceMember>,
 }
 
 /// Socket configuration with expanded paths and parsed durations
@@ -362,8 +407,8 @@ pub struct ExpandedSocketConfig {
     /// Resolved socket path
     pub path: PathBuf,
 
-    /// Source names to include
-    pub sources: Vec<String>,
+    /// Single source group reference
+    pub source: Option<String>,
 
     /// Filter rules for this socket (outer: OR, inner: AND)
     pub filters: Vec<Vec<String>>,
@@ -373,9 +418,6 @@ pub struct ExpandedSocketConfig {
 
     /// List of allowed process names
     pub allowed_processes: Vec<String>,
-
-    /// Resolved upstream path (if overridden for this socket)
-    pub upstream: Option<PathBuf>,
 }
 
 /// Per-key policy with parsed durations
@@ -421,41 +463,24 @@ impl Config {
             idle_check_command: self.policy.idle_check_command.clone(),
         };
 
-        // Expand sources
+        // Expand sources: parse members
         let mut sources = Vec::new();
         for source in &self.sources {
-            let expanded = match source {
-                SourceConfig::Agent { name, socket } => ExpandedSourceConfig::Agent {
-                    name: name.clone(),
-                    socket: PathBuf::from(expand_path(socket)?),
-                },
-                SourceConfig::Op { name } => ExpandedSourceConfig::Op { name: name.clone() },
-                SourceConfig::File { name, paths } => ExpandedSourceConfig::File {
-                    name: name.clone(),
-                    paths: paths
-                        .iter()
-                        .map(|p| expand_path(p).map(PathBuf::from))
-                        .collect::<Result<Vec<_>, _>>()?,
-                },
-            };
-            sources.push(expanded);
+            let members = source.parse_members()?;
+            sources.push(ExpandedSourceGroup {
+                name: source.name.clone(),
+                members,
+            });
         }
 
         // Expand sockets
         let mut sockets = HashMap::new();
         for (name, socket) in &self.sockets {
-            let socket_upstream = socket
-                .upstream
-                .as_ref()
-                .map(|u| expand_path(u))
-                .transpose()?
-                .map(PathBuf::from);
-
             sockets.insert(
                 name.clone(),
                 ExpandedSocketConfig {
                     path: PathBuf::from(expand_path(&socket.path)?),
-                    sources: socket.sources.clone(),
+                    source: socket.source.clone(),
                     filters: socket.filters.clone(),
                     timeout: socket
                         .timeout
@@ -463,7 +488,6 @@ impl Config {
                         .map(|s| parse_duration(s))
                         .transpose()?,
                     allowed_processes: socket.allowed_processes.clone(),
-                    upstream: socket_upstream,
                 },
             );
         }
@@ -570,118 +594,212 @@ mod tests {
         assert_eq!(config.github.timeout, "10s");
     }
 
-    #[test]
-    fn test_parse_sources_agent() {
-        let toml_str = r#"
-[[sources]]
-type = "agent"
-name = "1password-proxy"
-socket = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
-"#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.sources.len(), 1);
-        match &config.sources[0] {
-            SourceConfig::Agent { name, socket } => {
-                assert_eq!(name, "1password-proxy");
-                assert_eq!(
-                    socket,
-                    "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
-                );
-            }
-            _ => panic!("Expected Agent variant"),
-        }
-        assert_eq!(config.sources[0].name(), "1password-proxy");
-    }
+    // --- SourceMember::parse tests ---
 
     #[test]
-    fn test_parse_sources_op() {
-        let toml_str = r#"
-[[sources]]
-type = "op"
-name = "1password-managed"
-"#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.sources.len(), 1);
-        match &config.sources[0] {
-            SourceConfig::Op { name } => {
-                assert_eq!(name, "1password-managed");
+    fn test_source_member_parse_op_all() {
+        let member = SourceMember::parse("op://").unwrap();
+        match member {
+            SourceMember::Op { vault, item } => {
+                assert!(vault.is_none());
+                assert!(item.is_none());
             }
             _ => panic!("Expected Op variant"),
         }
-        assert_eq!(config.sources[0].name(), "1password-managed");
     }
 
     #[test]
-    fn test_parse_sources_file() {
-        let toml_str = r#"
-[[sources]]
-type = "file"
-name = "local-keys"
-paths = ["~/.ssh/id_work", "~/.ssh/id_personal"]
-"#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.sources.len(), 1);
-        match &config.sources[0] {
-            SourceConfig::File { name, paths } => {
-                assert_eq!(name, "local-keys");
-                assert_eq!(paths, &["~/.ssh/id_work", "~/.ssh/id_personal"]);
+    fn test_source_member_parse_op_vault() {
+        let member = SourceMember::parse("op://emerada").unwrap();
+        match member {
+            SourceMember::Op { vault, item } => {
+                assert_eq!(vault.as_deref(), Some("emerada"));
+                assert!(item.is_none());
+            }
+            _ => panic!("Expected Op variant"),
+        }
+    }
+
+    #[test]
+    fn test_source_member_parse_op_vault_item() {
+        let member = SourceMember::parse("op://Private/kawaz-mbp-key").unwrap();
+        match member {
+            SourceMember::Op { vault, item } => {
+                assert_eq!(vault.as_deref(), Some("Private"));
+                assert_eq!(item.as_deref(), Some("kawaz-mbp-key"));
+            }
+            _ => panic!("Expected Op variant"),
+        }
+    }
+
+    #[test]
+    fn test_source_member_parse_agent_explicit() {
+        let member = SourceMember::parse("agent:~/.ssh/agent.sock").unwrap();
+        match member {
+            SourceMember::Agent { socket } => {
+                assert_eq!(socket, "~/.ssh/agent.sock");
+            }
+            _ => panic!("Expected Agent variant"),
+        }
+    }
+
+    #[test]
+    fn test_source_member_parse_file_explicit() {
+        let member = SourceMember::parse("file:~/.ssh/id_work").unwrap();
+        match member {
+            SourceMember::File { path } => {
+                assert_eq!(path, "~/.ssh/id_work");
             }
             _ => panic!("Expected File variant"),
         }
-        assert_eq!(config.sources[0].name(), "local-keys");
     }
 
     #[test]
-    fn test_parse_multiple_sources() {
+    fn test_source_member_parse_bare_path() {
+        // Bare path defaults to Agent (auto-detection deferred to runtime)
+        let member = SourceMember::parse("/tmp/agent.sock").unwrap();
+        match member {
+            SourceMember::Agent { socket } => {
+                assert_eq!(socket, "/tmp/agent.sock");
+            }
+            _ => panic!("Expected Agent variant for bare path"),
+        }
+    }
+
+    #[test]
+    fn test_source_member_description() {
+        assert_eq!(
+            SourceMember::Op {
+                vault: None,
+                item: None
+            }
+            .description(),
+            "op://"
+        );
+        assert_eq!(
+            SourceMember::Op {
+                vault: Some("emerada".to_string()),
+                item: None
+            }
+            .description(),
+            "op://emerada"
+        );
+        assert_eq!(
+            SourceMember::Op {
+                vault: Some("Private".to_string()),
+                item: Some("key".to_string())
+            }
+            .description(),
+            "op://Private/key"
+        );
+        assert_eq!(
+            SourceMember::Agent {
+                socket: "/tmp/a.sock".to_string()
+            }
+            .description(),
+            "agent:/tmp/a.sock"
+        );
+        assert_eq!(
+            SourceMember::File {
+                path: "~/.ssh/id".to_string()
+            }
+            .description(),
+            "file:~/.ssh/id"
+        );
+    }
+
+    // --- SourceConfig TOML parse tests ---
+
+    #[test]
+    fn test_parse_source_group() {
         let toml_str = r#"
 [[sources]]
-type = "agent"
-name = "1password-proxy"
-socket = "/tmp/agent.sock"
-
-[[sources]]
-type = "op"
-name = "1password-managed"
-
-[[sources]]
-type = "file"
-name = "local-keys"
-paths = ["~/.ssh/id_work"]
+name = "work"
+members = ["op://emerada", "agent:~/Library/agent.sock", "file:~/.ssh/id_work"]
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.sources.len(), 3);
-        assert_eq!(config.sources[0].name(), "1password-proxy");
-        assert_eq!(config.sources[1].name(), "1password-managed");
-        assert_eq!(config.sources[2].name(), "local-keys");
+        assert_eq!(config.sources.len(), 1);
+        assert_eq!(config.sources[0].name(), "work");
+        assert_eq!(config.sources[0].members.len(), 3);
+        assert_eq!(config.sources[0].members[0], "op://emerada");
+        assert_eq!(config.sources[0].members[1], "agent:~/Library/agent.sock");
+        assert_eq!(config.sources[0].members[2], "file:~/.ssh/id_work");
     }
 
     #[test]
-    fn test_parse_sockets() {
+    fn test_parse_source_group_parse_members() {
+        let toml_str = r#"
+[[sources]]
+name = "work"
+members = ["op://", "agent:/tmp/agent.sock", "file:~/.ssh/id_work", "/tmp/bare.sock"]
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let members = config.sources[0].parse_members().unwrap();
+        assert_eq!(members.len(), 4);
+        assert!(matches!(
+            &members[0],
+            SourceMember::Op {
+                vault: None,
+                item: None
+            }
+        ));
+        assert!(
+            matches!(&members[1], SourceMember::Agent { socket } if socket == "/tmp/agent.sock")
+        );
+        assert!(matches!(&members[2], SourceMember::File { path } if path == "~/.ssh/id_work"));
+        assert!(
+            matches!(&members[3], SourceMember::Agent { socket } if socket == "/tmp/bare.sock")
+        );
+    }
+
+    #[test]
+    fn test_parse_multiple_source_groups() {
+        let toml_str = r#"
+[[sources]]
+name = "work"
+members = ["op://emerada"]
+
+[[sources]]
+name = "personal"
+members = ["file:~/.ssh/id_personal"]
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.sources.len(), 2);
+        assert_eq!(config.sources[0].name(), "work");
+        assert_eq!(config.sources[1].name(), "personal");
+    }
+
+    // --- SocketConfig tests ---
+
+    #[test]
+    fn test_parse_socket_with_source() {
         let toml_str = r#"
 [sockets.work]
 path = "$XDG_RUNTIME_DIR/authsock-warden/work.sock"
-sources = ["1password-managed"]
+source = "work"
 filters = ["comment=~@work"]
 timeout = "1h"
 allowed_processes = ["git"]
-
-[sockets.all]
-path = "$XDG_RUNTIME_DIR/authsock-warden/all.sock"
-sources = ["1password-proxy", "local-keys"]
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.sockets.len(), 2);
-
         let work = config.sockets.get("work").unwrap();
         assert_eq!(work.path, "$XDG_RUNTIME_DIR/authsock-warden/work.sock");
-        assert_eq!(work.sources, vec!["1password-managed"]);
+        assert_eq!(work.source.as_deref(), Some("work"));
         assert_eq!(work.filters, vec![vec!["comment=~@work".to_string()]]);
         assert_eq!(work.timeout.as_deref(), Some("1h"));
         assert_eq!(work.allowed_processes, vec!["git"]);
+    }
 
+    #[test]
+    fn test_parse_socket_without_source() {
+        let toml_str = r#"
+[sockets.all]
+path = "/tmp/all.sock"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
         let all = config.sockets.get("all").unwrap();
-        assert_eq!(all.path, "$XDG_RUNTIME_DIR/authsock-warden/all.sock");
-        assert_eq!(all.sources, vec!["1password-proxy", "local-keys"]);
+        assert_eq!(all.path, "/tmp/all.sock");
+        assert!(all.source.is_none());
         assert!(all.filters.is_empty());
         assert!(all.timeout.is_none());
         assert!(all.allowed_processes.is_empty());
@@ -789,29 +907,23 @@ method = "command"
 command = "/path/to/notify-and-verify.sh"
 
 [[sources]]
-type = "agent"
-name = "1password-proxy"
-socket = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+name = "work"
+members = ["op://emerada", "agent:~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock", "file:~/.ssh/id_work"]
 
 [[sources]]
-type = "op"
-name = "1password-managed"
-
-[[sources]]
-type = "file"
-name = "local-keys"
-paths = ["~/.ssh/id_work", "~/.ssh/id_personal"]
+name = "personal"
+members = ["file:~/.ssh/id_personal"]
 
 [sockets.work]
 path = "$XDG_RUNTIME_DIR/authsock-warden/work.sock"
-sources = ["1password-managed"]
+source = "work"
 filters = ["comment=~@work"]
 timeout = "1h"
 allowed_processes = ["git"]
 
 [sockets.all]
 path = "$XDG_RUNTIME_DIR/authsock-warden/all.sock"
-sources = ["1password-proxy", "local-keys"]
+source = "personal"
 
 [[keys]]
 public_key = "ssh-ed25519 AAAA..."
@@ -825,7 +937,7 @@ cache_ttl = "1h"
 timeout = "10s"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.sources.len(), 3);
+        assert_eq!(config.sources.len(), 2);
         assert_eq!(config.sockets.len(), 2);
         assert_eq!(config.keys.len(), 1);
     }
@@ -930,11 +1042,10 @@ filters = ["f1", "f2", ["f3", "f4"]]
     fn test_filters_empty_serialization() {
         let config = SocketConfig {
             path: "/tmp/test.sock".to_string(),
-            sources: vec![],
+            source: None,
             filters: vec![],
             timeout: None,
             allowed_processes: vec![],
-            upstream: None,
         };
 
         let serialized = toml::to_string(&config).unwrap();
@@ -943,35 +1054,12 @@ filters = ["f1", "f2", ["f3", "f4"]]
     }
 
     #[test]
-    fn test_socket_with_upstream() {
-        let toml_str = r#"
-[sockets.legacy]
-path = "/tmp/legacy.sock"
-upstream = "$SSH_AUTH_SOCK"
-"#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        let legacy = config.sockets.get("legacy").unwrap();
-        assert_eq!(legacy.upstream.as_deref(), Some("$SSH_AUTH_SOCK"));
-    }
-
-    #[test]
     fn test_source_config_name() {
-        let agent = SourceConfig::Agent {
-            name: "test-agent".to_string(),
-            socket: "/tmp/agent.sock".to_string(),
+        let source = SourceConfig {
+            name: "test-group".to_string(),
+            members: vec!["op://".to_string()],
         };
-        assert_eq!(agent.name(), "test-agent");
-
-        let op = SourceConfig::Op {
-            name: "test-op".to_string(),
-        };
-        assert_eq!(op.name(), "test-op");
-
-        let file = SourceConfig::File {
-            name: "test-file".to_string(),
-            paths: vec!["~/.ssh/id_ed25519".to_string()],
-        };
-        assert_eq!(file.name(), "test-file");
+        assert_eq!(source.name(), "test-group");
     }
 
     #[test]
@@ -1065,5 +1153,35 @@ timeout = "30s"
             std::time::Duration::from_secs(7200)
         );
         assert_eq!(expanded.github.timeout, std::time::Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_expand_paths_parses_source_members() {
+        let toml_str = r#"
+[[sources]]
+name = "work"
+members = ["op://emerada", "agent:/tmp/agent.sock", "file:~/.ssh/id_work"]
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let expanded = config.expand_paths().unwrap();
+
+        assert_eq!(expanded.sources.len(), 1);
+        assert_eq!(expanded.sources[0].name, "work");
+        assert_eq!(expanded.sources[0].members.len(), 3);
+        assert!(matches!(
+            &expanded.sources[0].members[0],
+            SourceMember::Op {
+                vault: Some(v),
+                item: None
+            } if v == "emerada"
+        ));
+        assert!(matches!(
+            &expanded.sources[0].members[1],
+            SourceMember::Agent { socket } if socket == "/tmp/agent.sock"
+        ));
+        assert!(matches!(
+            &expanded.sources[0].members[2],
+            SourceMember::File { path } if path == "~/.ssh/id_work"
+        ));
     }
 }

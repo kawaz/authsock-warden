@@ -219,13 +219,12 @@ method = "command"
 command = "/usr/local/bin/verify.sh"
 
 [[sources]]
-type = "agent"
 name = "test-agent"
-socket = "/tmp/agent.sock"
+members = ["agent:/tmp/agent.sock"]
 
 [sockets.test]
 path = "/tmp/test.sock"
-sources = ["test-agent"]
+source = "test-agent"
 filters = ["type=ed25519"]
 
 [github]
@@ -315,29 +314,23 @@ method = "command"
 command = "/path/to/verify.sh"
 
 [[sources]]
-type = "agent"
-name = "1password-proxy"
-socket = "/tmp/1password.sock"
+name = "1password"
+members = ["op://", "agent:/tmp/1password.sock"]
 
 [[sources]]
-type = "op"
-name = "1password-managed"
-
-[[sources]]
-type = "file"
 name = "local-keys"
-paths = ["/home/user/.ssh/id_work"]
+members = ["file:/home/user/.ssh/id_work"]
 
 [sockets.work]
 path = "/tmp/work.sock"
-sources = ["1password-managed"]
+source = "1password"
 filters = ["comment=~@work"]
 timeout = "1h"
 allowed_processes = ["git"]
 
 [sockets.all]
 path = "/tmp/all.sock"
-sources = ["1password-proxy", "local-keys"]
+source = "local-keys"
 
 [[keys]]
 public_key = "ssh-ed25519 AAAA..."
@@ -354,7 +347,7 @@ timeout = "10s"
         std::fs::write(&config_path, toml_content).unwrap();
 
         let config_file = load_config(&config_path).unwrap();
-        assert_eq!(config_file.config.sources.len(), 3);
+        assert_eq!(config_file.config.sources.len(), 2);
         assert_eq!(config_file.config.sockets.len(), 2);
         assert_eq!(config_file.config.keys.len(), 1);
 

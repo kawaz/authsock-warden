@@ -4,7 +4,7 @@
 
 use crate::agent::{Proxy, Server, Upstream};
 use crate::cli::args::RunArgs;
-use crate::config::{self, Config, SourceConfig};
+use crate::config::{self, Config, SourceConfig, SourceMember};
 use crate::filter::FilterEvaluator;
 use crate::utils::path::expand_path;
 use std::path::PathBuf;
@@ -122,26 +122,25 @@ fn resolve_upstream(
     socket_config: &crate::config::SocketConfig,
     config: &Config,
 ) -> anyhow::Result<Upstream> {
-    // 1. Socket-level upstream override (backward compatibility)
-    if let Some(ref upstream_path) = socket_config.upstream {
-        let expanded = expand_path(upstream_path)?;
-        return Ok(Upstream::new(expanded));
-    }
-
-    // 2. Find first agent source referenced by this socket
-    if !socket_config.sources.is_empty() {
-        for source_name in &socket_config.sources {
-            if let Some(SourceConfig::Agent { socket, .. }) =
-                config.sources.iter().find(|s| s.name() == source_name)
-            {
-                let expanded = expand_path(socket)?;
-                return Ok(Upstream::new(expanded));
+    // 1. Find first agent member in the referenced source group
+    if let Some(ref source_name) = socket_config.source {
+        if let Some(source) = config.sources.iter().find(|s| s.name() == source_name)
+            && let Ok(members) = source.parse_members()
+        {
+            for member in &members {
+                if let SourceMember::Agent { socket } = member {
+                    let expanded = expand_path(socket)?;
+                    return Ok(Upstream::new(expanded));
+                }
             }
         }
-        warn!("No agent-type source found for socket. Using SSH_AUTH_SOCK fallback.");
+        warn!(
+            source = %source_name,
+            "No agent-type member found in source group. Using SSH_AUTH_SOCK fallback."
+        );
     }
 
-    // 3. Fallback to SSH_AUTH_SOCK
+    // 2. Fallback to SSH_AUTH_SOCK
     Ok(Upstream::from_env()?)
 }
 
@@ -149,13 +148,13 @@ fn resolve_upstream(
 fn apply_cli_args(config: &mut Config, args: &RunArgs) {
     // --upstream overrides the upstream for all sockets
     if let Some(ref upstream) = args.upstream {
-        // Add or replace default agent source
+        // Add or replace default agent source group
         let upstream_str = upstream.display().to_string();
         let has_cli_source = config.sources.iter().any(|s| s.name() == "_cli");
         if !has_cli_source {
-            config.sources.push(SourceConfig::Agent {
+            config.sources.push(SourceConfig {
                 name: "_cli".to_string(),
-                socket: upstream_str,
+                members: vec![format!("agent:{}", upstream_str)],
             });
         }
     }
@@ -173,16 +172,15 @@ fn apply_cli_args(config: &mut Config, args: &RunArgs) {
 
         let mut socket_config = crate::config::SocketConfig {
             path,
-            sources: vec![],
+            source: None,
             filters: filter_groups,
             timeout: None,
             allowed_processes: vec![],
-            upstream: None,
         };
 
-        // If --upstream was given, point this socket to it
+        // If --upstream was given, point this socket to the _cli source group
         if args.upstream.is_some() {
-            socket_config.sources = vec!["_cli".to_string()];
+            socket_config.source = Some("_cli".to_string());
         }
 
         config.sockets.insert(name, socket_config);
