@@ -1,0 +1,65 @@
+[package]
+name = "authsock-warden"
+version = "0.1.0"
+edition = "2024"
+authors = ["Yoshiaki Kawazu <kawazzz@gmail.com>"]
+license = "MIT"
+description = "SSH agent proxy with key filtering, process-aware access control, and 1Password integration"
+repository = "https://github.com/kawaz/authsock-warden"
+
+[[bin]]
+name = "authsock-warden"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full", "signal", "process"] }
+
+# SSH key handling
+ssh-key = { version = "0.6", features = ["std", "rand_core", "ed25519", "rsa"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = { version = "4", features = ["unstable-dynamic"] }
+
+# Configuration
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Pattern matching
+regex = "1"
+globset = "0.4"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Byte manipulation
+bytes = "1"
+
+# HTTP client (for GitHub keys)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Path utilities
+dirs = "5"
+shellexpand = "3"
+shlex = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+plist = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio-test = "0.4"
+
+[profile.release]
+lto = true
+strip = true
