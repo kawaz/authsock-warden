@@ -957,8 +957,26 @@ timeout = "30s"
     }
 
     #[test]
+    fn test_parse_op_account() {
+        let toml_str = r#"
+op_account = "kawaz.1password.com"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.op_account.as_deref(), Some("kawaz.1password.com"));
+    }
+
+    #[test]
+    fn test_parse_op_account_none() {
+        let toml_str = "";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.op_account.is_none());
+    }
+
+    #[test]
     fn test_parse_full_config() {
         let toml_str = r#"
+op_account = "kawaz.1password.com"
+
 [policy]
 idle_check_interval = "30s"
 idle_check_command = "/path/to/cmux-check.sh"
@@ -998,6 +1016,7 @@ cache_ttl = "1h"
 timeout = "10s"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.op_account.as_deref(), Some("kawaz.1password.com"));
         assert_eq!(config.sources.len(), 2);
         assert_eq!(config.sockets.len(), 2);
         assert_eq!(config.keys.len(), 1);

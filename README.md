@@ -63,6 +63,9 @@ ssh-add -L
 Create `~/.config/authsock-warden/config.toml`:
 
 ```toml
+# 1Password account (required if multiple accounts configured)
+# op_account = "kawaz.1password.com"
+
 # Source groups bundle multiple key sources under one name
 [[sources]]
 name = "work"

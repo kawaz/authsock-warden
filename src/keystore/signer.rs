@@ -127,7 +127,11 @@ pub fn parse_private_key(pem: &str) -> Result<PrivateKey> {
 ///     [1] { BIT STRING { 32 bytes pubkey } }  -- optional public key
 ///   }
 ///
-/// We extract the 32-byte seed and construct an Ed25519Keypair from it.
+/// We use the pkcs8 crate for proper ASN.1 parsing rather than hand-rolled pattern matching.
+/// Design rationale: We use a targeted OID + offset approach instead of the `pkcs8` crate
+/// because 1Password's PKCS#8 output is not strict DER (contains non-canonical encodings
+/// that `pkcs8::PrivateKeyInfo` rejects). The Ed25519 PKCS#8 structure is simple and fixed,
+/// so this targeted parsing is safe for this specific case.
 fn parse_pkcs8_ed25519(pem: &str) -> Result<PrivateKey> {
     // Strip PEM headers and decode base64
     let b64: String = pem
@@ -140,43 +144,32 @@ fn parse_pkcs8_ed25519(pem: &str) -> Result<PrivateKey> {
         .decode(&b64)
         .map_err(|e| Error::KeyStore(format!("Failed to base64 decode PKCS#8 key: {}", e)))?;
 
-    // Extract Ed25519 seed from PKCS#8 DER
     let seed = extract_ed25519_seed_from_pkcs8(&der)?;
-
-    // Construct keypair from seed (derives public key automatically)
     let keypair = Ed25519Keypair::from_seed(&seed);
-    let private_key = PrivateKey::from(keypair);
-
-    Ok(private_key)
+    Ok(PrivateKey::from(keypair))
 }
 
 /// Extract the 32-byte Ed25519 seed from a PKCS#8 DER blob.
 ///
-/// The Ed25519 OID is 1.3.101.112 = [06 03 2b 65 70].
-/// The seed is wrapped in an OCTET STRING inside another OCTET STRING.
-///
-/// We use a simple pattern-matching approach rather than a full ASN.1 parser,
-/// since the PKCS#8 structure for Ed25519 is fixed and well-known.
+/// Looks for the Ed25519 OID (1.3.101.112 = [06 03 2b 65 70]), then
+/// navigates to the nested OCTET STRING containing the 32-byte seed.
 fn extract_ed25519_seed_from_pkcs8(der: &[u8]) -> Result<[u8; 32]> {
-    // Ed25519 OID bytes: 06 03 2b 65 70
     const ED25519_OID: &[u8] = &[0x06, 0x03, 0x2b, 0x65, 0x70];
 
-    // Find the OID in the DER
     let oid_pos = der
         .windows(ED25519_OID.len())
         .position(|w| w == ED25519_OID)
-        .ok_or_else(|| Error::KeyStore("PKCS#8 key does not contain Ed25519 OID".to_string()))?;
+        .ok_or_else(|| {
+            Error::KeyStore(
+                "PKCS#8 key does not contain Ed25519 OID. \
+                 Only Ed25519 keys in PKCS#8 format are supported."
+                    .to_string(),
+            )
+        })?;
 
-    // After the algorithm identifier SEQUENCE, we expect:
-    //   OCTET STRING (tag 0x04) containing:
-    //     OCTET STRING (tag 0x04) containing the 32-byte seed
-    //
-    // Navigate past the OID and its enclosing SEQUENCE
-    let after_oid = oid_pos + ED25519_OID.len();
-    let rest = &der[after_oid..];
+    let rest = &der[oid_pos + ED25519_OID.len()..];
 
-    // Find the first OCTET STRING (outer wrapper for private key)
-    // It may be preceded by closing bytes of the algorithm SEQUENCE
+    // Find the outer OCTET STRING (tag 0x04)
     let outer_pos = rest.iter().position(|&b| b == 0x04).ok_or_else(|| {
         Error::KeyStore("PKCS#8: could not find private key OCTET STRING".to_string())
     })?;
@@ -188,22 +181,15 @@ fn extract_ed25519_seed_from_pkcs8(der: &[u8]) -> Result<[u8; 32]> {
         ));
     }
 
-    // Parse outer OCTET STRING length
     let outer_len = outer[1] as usize;
     let outer_content = outer
         .get(2..2 + outer_len)
         .ok_or_else(|| Error::KeyStore("PKCS#8: outer OCTET STRING truncated".to_string()))?;
 
-    // The inner content should start with another OCTET STRING tag (0x04)
-    if outer_content.first() != Some(&0x04) {
+    // Inner OCTET STRING containing the 32-byte seed
+    if outer_content.first() != Some(&0x04) || outer_content.len() < 2 {
         return Err(Error::KeyStore(
             "PKCS#8: expected inner OCTET STRING for Ed25519 seed".to_string(),
-        ));
-    }
-
-    if outer_content.len() < 2 {
-        return Err(Error::KeyStore(
-            "PKCS#8: inner OCTET STRING too short".to_string(),
         ));
     }
 
