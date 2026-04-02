@@ -78,6 +78,7 @@ name = "authsock-warden"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "bytes",
  "clap",
  "clap_complete",
@@ -92,6 +93,7 @@ dependencies = [
  "serde_json",
  "shellexpand",
  "shlex",
+ "signature",
  "ssh-key",
  "tempfile",
  "thiserror 2.0.18",
