@@ -396,7 +396,16 @@ impl WardProxy {
     /// For each op source, calls `op item list` then `op item get` for
     /// each discovered key to obtain the public key blob.
     async fn discover_op_keys(&self) -> Result<HashMap<Bytes, OpManagedKey>> {
+        use crate::keystore::cache::{CachedKey, OpKeyCache};
+
         let mut keys = HashMap::new();
+        let mut cache = OpKeyCache::load();
+        let cache_map = cache
+            .by_fingerprint()
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect::<HashMap<String, CachedKey>>();
+        let mut new_cache_keys: Vec<CachedKey> = Vec::new();
 
         for source in &self.op_sources {
             let vault = source.vault.clone();
@@ -409,12 +418,15 @@ impl WardProxy {
             .await
             .map_err(|e| Error::KeyStore(format!("spawn_blocking failed: {}", e)))??;
 
-            // Build fingerprint → (itemid, title) map
-            let mut fp_to_info: HashMap<String, (String, String)> = HashMap::new();
+            let mut fp_to_info: HashMap<String, (String, String, String)> = HashMap::new();
             for info in &key_infos {
                 fp_to_info.insert(
                     info.fingerprint.clone(),
-                    (info.item_id.clone(), info.title.clone()),
+                    (
+                        info.item_id.clone(),
+                        info.title.clone(),
+                        info.vault_name.clone(),
+                    ),
                 );
             }
 
@@ -423,9 +435,47 @@ impl WardProxy {
                 "op item list returned SSH keys, resolving public keys..."
             );
 
-            // Step 2: Try 1Password agent socket for fast public key resolution
-            let agent_resolved = self.resolve_keys_via_agent(&fp_to_info).await;
             let mut resolved_fps: HashSet<String> = HashSet::new();
+
+            // Step 2: Try disk cache for instant resolution
+            for (fp, (item_id, title, vault_name)) in &fp_to_info {
+                if let Some(cached) = cache_map.get(fp.as_str())
+                    && let Ok(pub_key) = PublicKey::from_openssh(&cached.public_key)
+                    && let Ok(blob) = pub_key.to_bytes()
+                {
+                    let key_blob = Bytes::from(blob);
+                    resolved_fps.insert(fp.clone());
+                    debug!(title = %title, "Resolved via cache");
+                    keys.insert(
+                        key_blob,
+                        OpManagedKey {
+                            item_id: item_id.clone(),
+                            title: title.clone(),
+                        },
+                    );
+                    new_cache_keys.push(CachedKey {
+                        item_id: item_id.clone(),
+                        fingerprint: fp.clone(),
+                        public_key: cached.public_key.clone(),
+                        title: title.clone(),
+                        vault: vault_name.clone(),
+                    });
+                }
+            }
+
+            if resolved_fps.len() == fp_to_info.len() {
+                debug!("All keys resolved from cache");
+                continue;
+            }
+
+            // Step 3: Try 1Password agent socket for remaining keys
+            let remaining_fp_to_info: HashMap<String, (String, String)> = fp_to_info
+                .iter()
+                .filter(|(fp, _)| !resolved_fps.contains(fp.as_str()))
+                .map(|(fp, (id, title, _))| (fp.clone(), (id.clone(), title.clone())))
+                .collect();
+
+            let agent_resolved = self.resolve_keys_via_agent(&remaining_fp_to_info).await;
 
             if let Ok(ref agent_keys) = agent_resolved {
                 for (fp, (key_blob, item_id, title)) in agent_keys {
@@ -438,10 +488,24 @@ impl WardProxy {
                             title: title.clone(),
                         },
                     );
+                    // Reconstruct public key string for cache
+                    if let Ok(pub_key) = PublicKey::from_bytes(key_blob) {
+                        let vault_name = fp_to_info
+                            .get(fp)
+                            .map(|(_, _, v)| v.as_str())
+                            .unwrap_or("Unknown");
+                        new_cache_keys.push(CachedKey {
+                            item_id: item_id.clone(),
+                            fingerprint: fp.clone(),
+                            public_key: pub_key.to_openssh().unwrap_or_default(),
+                            title: title.clone(),
+                            vault: vault_name.to_string(),
+                        });
+                    }
                 }
             }
 
-            // Step 3: Fetch remaining keys via op item get (parallel)
+            // Step 4: Fetch still-remaining keys via op item get (parallel)
             let remaining: Vec<_> = key_infos
                 .iter()
                 .filter(|info| !resolved_fps.contains(&info.fingerprint))
@@ -454,7 +518,7 @@ impl WardProxy {
                 );
 
                 let mut fetch_tasks = Vec::new();
-                for info in remaining {
+                for info in &remaining {
                     let item_id = info.item_id.clone();
                     let title = info.title.clone();
                     let task = tokio::task::spawn_blocking(move || {
@@ -464,7 +528,7 @@ impl WardProxy {
                     fetch_tasks.push(task);
                 }
 
-                for task in fetch_tasks {
+                for (task, info) in fetch_tasks.into_iter().zip(remaining.iter()) {
                     let (item_id, title, pub_key_str) = task
                         .await
                         .map_err(|e| Error::KeyStore(format!("spawn_blocking failed: {}", e)))??;
@@ -484,10 +548,28 @@ impl WardProxy {
                     })?);
 
                     debug!(title = %title, item_id = %item_id, "Resolved via op item get");
-                    keys.insert(key_blob, OpManagedKey { item_id, title });
+                    keys.insert(
+                        key_blob,
+                        OpManagedKey {
+                            item_id: item_id.clone(),
+                            title: title.clone(),
+                        },
+                    );
+
+                    new_cache_keys.push(CachedKey {
+                        item_id,
+                        fingerprint: info.fingerprint.clone(),
+                        public_key: pub_key_str,
+                        title,
+                        vault: info.vault_name.clone(),
+                    });
                 }
             }
         }
+
+        // Save updated cache
+        cache.keys = new_cache_keys;
+        cache.save();
 
         info!(count = keys.len(), "Op key discovery complete");
         Ok(keys)
