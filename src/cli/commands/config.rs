@@ -11,15 +11,37 @@ fn default_config() -> &'static str {
     r#"# authsock-warden configuration
 # See: https://github.com/kawaz/authsock-warden
 
-# Source groups
+# Source groups — bundle key sources under a name
+# Member types:
+#   op://            All 1Password SSH keys (warden signs locally)
+#   op://vault       Keys in a specific vault
+#   agent:PATH       Proxy to SSH agent socket (upstream signs)
+#   file:PATH        Load private key from file
+#   PATH             Auto-detect (socket → agent, file → key)
+
 # [[sources]]
 # name = "default"
 # members = ["op://"]
 
-# Socket definitions
+# Socket definitions — each socket references a source group
 # [sockets.default]
-# path = "$XDG_RUNTIME_DIR/authsock-warden/default.sock"
+# path = "/tmp/authsock-warden.sock"
 # source = "default"
+# filters = []               # e.g., ["type=ed25519", "comment=*@work*"]
+# allowed_processes = []      # e.g., ["ssh", "git", "jj"]
+
+# Per-key policies (optional)
+# [[keys]]
+# public_key = "ssh-ed25519 AAAA..."
+# timeout = "4h"             # Lock key after this duration
+# on_timeout = "lock"        # "lock" (keep in memory) or "forget" (zeroize)
+# forget_after = "24h"       # Absolute limit, even if locked
+# allowed_processes = ["ssh", "git"]
+
+# GitHub API settings (for github= filter)
+# [github]
+# cache_ttl = "1h"
+# timeout = "10s"
 "#
 }
 
