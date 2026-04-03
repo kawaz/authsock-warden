@@ -34,6 +34,13 @@ release bump="patch": check test build
     #!/usr/bin/env bash
     set -euo pipefail
 
+    # Ensure working copy is clean (@ should be empty)
+    if ! jj log -r @ --no-graph -T 'if(empty, "", "dirty")' | grep -q '^$'; then
+        echo "Error: Working copy has uncommitted changes. Commit or discard first." >&2
+        jj status >&2
+        exit 1
+    fi
+
     # Version bump
     current=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     IFS='.' read -r major minor patchv <<< "$current"
