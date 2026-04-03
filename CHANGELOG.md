@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2026-04-03
+
+### Fixed
+
+- 1Password agent socket の検索で `~/.ssh/agent-1password.sock` を優先するよう変更。macOS の TCC プライバシーダイアログ（`~/Library/Group Containers/` アクセス時）を回避できる。ユーザーは以下のシンボリックリンクを作成推奨:
+  ```
+  ln -s ~/Library/Group\ Containers/2BUA8C4S2C.com.1password/t/agent.sock ~/.ssh/agent-1password.sock
+  ```
+
 ## [0.1.9] - 2026-04-03
 
 ### Added
