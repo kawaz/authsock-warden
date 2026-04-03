@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.13] - 2026-04-03
+
+### Fixed
+
+- macOS tarball に bare binary を同梱し、Homebrew でのインストール失敗を修正。Homebrew はトップレベルが単一ディレクトリの tarball を自動ストリップするため、`.app` バンドルのみだと Formula がバイナリを検出できなかった。
+
 ## [0.1.12] - 2026-04-03
 
 ### Added
