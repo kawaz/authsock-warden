@@ -88,7 +88,13 @@ mod internal {
 
     #[derive(Subcommand, Debug, Clone)]
     pub enum InternalCommand {
-        /// Check Full Disk Access status
+        /// Check Full Disk Access status.
+        ///
+        /// Outputs "ok" if FDA is granted, "denied" otherwise.
+        /// Note: "denied" cannot distinguish between FDA being OFF (in list but disabled)
+        /// and not registered (not in list at all), because reading the TCC database
+        /// itself requires FDA. In practice, running this command via .app causes macOS
+        /// to add the app to the FDA list, so "denied" effectively means OFF.
         FdaCheck {
             /// Path to write result ("ok" or "denied"). If omitted, prints to stdout.
             #[arg(long)]
