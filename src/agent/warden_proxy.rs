@@ -854,7 +854,7 @@ impl WardProxy {
 ///
 /// Returns None if the socket doesn't exist.
 fn onepassword_agent_socket() -> Option<std::path::PathBuf> {
-    // Check OP_AGENT_SOCK environment variable first
+    // Check OP_AGENT_SOCK environment variable first (user override)
     if let Ok(path) = std::env::var("OP_AGENT_SOCK") {
         let p = std::path::PathBuf::from(path);
         if p.exists() {
@@ -864,32 +864,51 @@ fn onepassword_agent_socket() -> Option<std::path::PathBuf> {
 
     let home = dirs::home_dir()?;
 
+    // Platform-specific 1Password agent socket paths
+    #[cfg(target_os = "macos")]
+    let original_path =
+        Some(home.join("Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"));
+
+    #[cfg(target_os = "linux")]
+    let original_path = Some(home.join(".1password/agent.sock"));
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let original_path: Option<std::path::PathBuf> = None;
+
+    let original = original_path.filter(|p| p.exists())?;
+
+    // On macOS, accessing ~/Library/Group Containers/ triggers a TCC privacy dialog
+    // when running as a launchd service. Create a symlink in our state directory
+    // to avoid this.
     #[cfg(target_os = "macos")]
     {
-        // Prefer symlink at ~/.ssh to avoid macOS TCC privacy dialog
-        // for accessing ~/Library/Group Containers/
-        let symlink_path = home.join(".ssh/agent-1password.sock");
+        let state_dir = std::env::var("XDG_STATE_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| home.join(".local/state"));
+        let symlink_path = state_dir.join("authsock-warden/agent-1password.sock");
+
+        // Use existing symlink if it points to the right place
         if symlink_path.exists() {
             return Some(symlink_path);
         }
 
-        // Fallback to direct Group Containers path (may trigger TCC dialog)
-        let direct_path =
-            home.join("Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock");
-        if direct_path.exists() {
-            return Some(direct_path);
+        // Create symlink to avoid TCC dialog
+        if let Some(parent) = symlink_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        // Remove stale symlink if exists
+        let _ = std::fs::remove_file(&symlink_path);
+        if std::os::unix::fs::symlink(&original, &symlink_path).is_ok() {
+            tracing::debug!(
+                original = %original.display(),
+                symlink = %symlink_path.display(),
+                "Created symlink to 1Password agent socket"
+            );
+            return Some(symlink_path);
         }
     }
 
-    #[cfg(target_os = "linux")]
-    {
-        let path = home.join(".1password/agent.sock");
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
-    None
+    Some(original)
 }
 
 #[cfg(test)]
