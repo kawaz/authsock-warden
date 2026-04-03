@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.19] - 2026-04-03
+
+### Added
+
+- `service register` の FDA セットアップ待機中に FDA の許可状態を自動検出（2秒間隔でポーリング）。FDA が許可されると自動的に次のステップへ進むようになった。
+- FDA を許可せずに Enter を押した場合、サービス起動やアップグレードのたびに TCC ダイアログが表示される旨の警告を表示し、後から `register` を再実行することを案内するようにした。
+
 ## [0.1.17] - 2026-04-03
 
 ### Fixed
