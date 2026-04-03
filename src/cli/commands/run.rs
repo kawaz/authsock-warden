@@ -40,6 +40,9 @@ pub async fn execute(args: RunArgs, config_path: Option<PathBuf>) -> anyhow::Res
         );
     }
 
+    // Apply security protections before handling any secrets
+    crate::security::anti_debug::apply_protections();
+
     // Set up shutdown signal
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
