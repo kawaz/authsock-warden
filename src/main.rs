@@ -90,17 +90,19 @@ async fn run(cli: Cli) -> Result<(), (ExitCode, anyhow::Error)> {
 }
 
 fn classify_error(err: &anyhow::Error) -> ExitCode {
-    let err_str = format!("{err:#}").to_lowercase();
-
-    if err_str.contains("config") || err_str.contains("configuration") {
-        ExitCode::ConfigError
-    } else if err_str.contains("upstream") || err_str.contains("ssh_auth_sock") {
-        ExitCode::UpstreamError
-    } else if err_str.contains("socket") || err_str.contains("bind") || err_str.contains("listen") {
-        ExitCode::SocketError
-    } else {
-        ExitCode::GeneralError
+    // Classify by downcasting to concrete error types rather than string matching
+    use authsock_warden::error::Error;
+    for cause in err.chain() {
+        if let Some(e) = cause.downcast_ref::<Error>() {
+            return match e {
+                Error::Config(_) | Error::TomlParse(_) => ExitCode::ConfigError,
+                Error::UpstreamNotAvailable(_) => ExitCode::UpstreamError,
+                Error::Socket(_) => ExitCode::SocketError,
+                _ => continue,
+            };
+        }
     }
+    ExitCode::GeneralError
 }
 
 fn init_logging(verbose: bool, quiet: bool) {
