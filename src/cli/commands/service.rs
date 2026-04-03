@@ -618,7 +618,7 @@ pub async fn register(args: RegisterArgs, config_override: Option<PathBuf>) -> R
     let config_path_str = config_path.display().to_string();
 
     // Validate config file is parseable
-    let config_file = load_config(&config_path)
+    let _config_file = load_config(&config_path)
         .map_err(|e| anyhow::anyhow!("Invalid configuration file: {}", e))?;
 
     info!(name = %args.name, executable = %exe_path_str, config = %config_path_str, "Registering systemd service");
