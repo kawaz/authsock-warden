@@ -37,7 +37,13 @@ impl Server {
     pub async fn bind(&mut self) -> Result<()> {
         prepare_socket_path(&self.socket_path).map_err(|e| Error::Socket(e.to_string()))?;
 
-        let listener = UnixListener::bind(&self.socket_path).map_err(|e| {
+        // Set restrictive umask before bind to prevent TOCTOU window
+        // where socket has default (umask-dependent) permissions
+        let old_umask = unsafe { libc::umask(0o077) };
+        let bind_result = UnixListener::bind(&self.socket_path);
+        unsafe { libc::umask(old_umask) };
+
+        let listener = bind_result.map_err(|e| {
             Error::Socket(format!(
                 "Failed to bind to socket at {}: {}",
                 self.socket_path.display(),
