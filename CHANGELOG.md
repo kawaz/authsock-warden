@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.14] - 2026-04-03
+
+### Changed
+
+- **Breaking (macOS Homebrew)**: Homebrew 配布を Formula + Cask の2本立てに変更。
+  - `brew install kawaz/tap/authsock-warden` — ベアバイナリのみ（全プラットフォーム共通）
+  - `brew install --cask kawaz/tap/authsock-warden` — .app バンドル（macOS 専用、TCC パーミッション永続化）
+  - 従来 `brew install` で .app バンドルが入っていた macOS ユーザーは、TCC 永続化が必要な場合 `brew install --cask` への移行が必要。
+
 ## [0.1.13] - 2026-04-03
 
 ### Fixed
