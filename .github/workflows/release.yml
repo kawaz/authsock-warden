@@ -191,7 +191,9 @@ jobs:
         run: |
           cd target/${{ matrix.target }}/release
           if [ -d "AuthsockWarden.app" ]; then
-            tar czf ../../../authsock-warden-${{ matrix.target }}.tar.gz AuthsockWarden.app
+            # Include both .app bundle and bare binary so Homebrew doesn't
+            # auto-strip the single top-level directory (AuthsockWarden.app)
+            tar czf ../../../authsock-warden-${{ matrix.target }}.tar.gz AuthsockWarden.app authsock-warden
           else
             tar czf ../../../authsock-warden-${{ matrix.target }}.tar.gz authsock-warden
           fi
