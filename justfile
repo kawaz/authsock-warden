@@ -64,14 +64,11 @@ release bump="patch":
         exit 1
     fi
 
-    # Commit, tag, push
+    # Commit and push (GitHub Actions will create tag + release automatically)
     jj describe -m "Release v${new_version}"
     jj new
     jj bookmark set main -r @-
-    jj tag set "v${new_version}" -r @-
-    jj git push --bookmark main
-    jj git export
-    GIT_WORK_TREE="$(pwd)" git --git-dir="$(jj root)/../.git" push origin "v${new_version}"
+    just push
 
-    # Watch workflow
+    # Watch release workflow
     gh run watch

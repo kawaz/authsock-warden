@@ -2,10 +2,38 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths:
+      - "Cargo.toml"
 
 jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.current }}
+      changed: ${{ steps.version.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check version change
+        id: version
+        run: |
+          CURRENT_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          # Check if a GitHub release with this version already exists
+          if gh release view "v${CURRENT_VERSION}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "Version unchanged: v${CURRENT_VERSION} already released"
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "New version detected: v${CURRENT_VERSION}"
+          fi
+          echo "current=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   build-release:
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -128,7 +156,7 @@ jobs:
           path: authsock-warden-${{ matrix.target }}.tar.gz
 
   publish-release:
-    needs: build-release
+    needs: [check-version, build-release]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -137,13 +165,21 @@ jobs:
         with:
           merge-multiple: true
 
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: authsock-warden-*.tar.gz
-          generate_release_notes: true
+      - name: Create release with tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check-version.outputs.version }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          gh release create "v${VERSION}" \
+            authsock-warden-*.tar.gz \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "v${VERSION}" \
+            --target "$COMMIT_SHA" \
+            --generate-notes
 
   update-homebrew:
-    needs: publish-release
+    needs: [check-version, publish-release]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -161,7 +197,7 @@ jobs:
 
       - name: Get version
         id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+        run: echo "version=${{ needs.check-version.outputs.version }}" >> $GITHUB_OUTPUT
 
       - name: Checkout homebrew-tap
         uses: actions/checkout@v4
