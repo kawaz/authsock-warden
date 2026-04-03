@@ -51,7 +51,7 @@ jobs:
           fi
 
       - name: Import signing certificate (macOS)
-        if: runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_BASE64 != ''
+        if: runner.os == 'macOS'
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -72,7 +72,7 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
 
       - name: Sign binary (macOS)
-        if: runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY != ''
+        if: runner.os == 'macOS'
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
@@ -85,7 +85,7 @@ jobs:
           codesign -dv --verbose=2 target/${{ matrix.target }}/release/authsock-warden
 
       - name: Notarize binary (macOS)
-        if: runner.os == 'macOS' && secrets.APPLE_ID != ''
+        if: runner.os == 'macOS'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
