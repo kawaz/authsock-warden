@@ -77,15 +77,22 @@ pub enum Commands {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum ConfigCommand {
+    /// Show current configuration
     Show,
+    /// Open configuration in editor
     Edit,
+    /// Print configuration file path
     Path,
 }
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum ServiceCommand {
+    /// Register as an OS service (launchd/systemd)
     Register(RegisterArgs),
+    /// Unregister the OS service
     Unregister(UnregisterArgs),
+    /// Reload the OS service configuration
     Reload(UnregisterArgs),
+    /// Show OS service status
     Status(UnregisterArgs),
 }
