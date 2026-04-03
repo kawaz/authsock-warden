@@ -1,6 +1,6 @@
 [package]
 name = "authsock-warden"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2024"
 authors = ["Yoshiaki Kawazu <kawazzz@gmail.com>"]
 license = "MIT"
