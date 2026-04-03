@@ -7,7 +7,7 @@ use tracing::error;
 use tracing_subscriber::EnvFilter;
 
 use authsock_warden::cli::exit_code::ExitCode;
-use authsock_warden::cli::{Cli, Commands, ServiceCommand};
+use authsock_warden::cli::{Cli, Commands, InternalCommand, ServiceCommand};
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
@@ -84,6 +84,33 @@ async fn run(cli: Cli) -> Result<(), (ExitCode, anyhow::Error)> {
         Commands::Version => {
             authsock_warden::cli::commands::version::print_version(cli.verbose);
         }
+        Commands::Internal { command } => match command {
+            InternalCommand::FdaCheck { result_file } => {
+                #[cfg(target_os = "macos")]
+                {
+                    let tcc_db =
+                        std::path::Path::new("/Library/Application Support/com.apple.TCC/TCC.db");
+                    let has_fda = std::fs::File::open(tcc_db).is_ok();
+                    std::fs::write(&result_file, if has_fda { "ok" } else { "denied" }).map_err(
+                        |e| {
+                            (
+                                ExitCode::GeneralError,
+                                anyhow::anyhow!("Failed to write FDA check result: {}", e),
+                            )
+                        },
+                    )?;
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    std::fs::write(&result_file, "ok").map_err(|e| {
+                        (
+                            ExitCode::GeneralError,
+                            anyhow::anyhow!("Failed to write FDA check result: {}", e),
+                        )
+                    })?;
+                }
+            }
+        },
     }
 
     Ok(())

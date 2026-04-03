@@ -437,7 +437,7 @@ pub async fn register(args: RegisterArgs, config_override: Option<PathBuf>) -> R
     println!("Created: {}", plist_path.display());
 
     // Show FDA guidance before starting service (op:// sources need FDA)
-    if has_op_sources(&config_file) {
+    if has_op_sources(&config_file) && !check_fda_via_app()? {
         prompt_fda_setup();
     }
 
@@ -466,6 +466,68 @@ fn has_op_sources(config_file: &crate::config::ConfigFile) -> bool {
         .any(|s| s.members.iter().any(|m| m.starts_with("op://")))
 }
 
+/// Check FDA status by launching the .app bundle with `open --wait-apps`.
+/// This runs the fda-check internal command as the .app's own TCC identity.
+/// Returns Ok(true) if FDA is granted, Ok(false) if denied or not running from .app.
+#[cfg(target_os = "macos")]
+fn check_fda_via_app() -> Result<bool> {
+    // Resolve .app path from current exe
+    let exe = std::env::current_exe().context("Failed to get current executable path")?;
+    let Some(app_path) = find_app_bundle(&exe) else {
+        // Not running from .app, skip check
+        return Ok(false);
+    };
+
+    let app_path_str = app_path
+        .to_str()
+        .context("App bundle path contains invalid UTF-8")?;
+
+    // Create temp file for result
+    let result_file =
+        std::env::temp_dir().join(format!("authsock-warden-fda-check-{}", std::process::id()));
+
+    // Run fda-check via `open --wait-apps` so it runs as the .app (own TCC identity)
+    let status = std::process::Command::new("open")
+        .args([
+            "--wait-apps",
+            app_path_str,
+            "--args",
+            "internal",
+            "fda-check",
+            "--result-file",
+            result_file
+                .to_str()
+                .context("Temp file path contains invalid UTF-8")?,
+        ])
+        .status()
+        .context("Failed to run 'open' command for FDA check")?;
+
+    if !status.success() {
+        // open command itself failed, can't determine FDA status
+        let _ = std::fs::remove_file(&result_file);
+        return Ok(false);
+    }
+
+    // Read result
+    let result = std::fs::read_to_string(&result_file).unwrap_or_default();
+    let _ = std::fs::remove_file(&result_file);
+
+    Ok(result.trim() == "ok")
+}
+
+/// Find the .app bundle root from a binary path.
+///
+/// e.g., /Applications/AuthsockWarden.app/Contents/MacOS/authsock-warden
+///    -> /Applications/AuthsockWarden.app
+#[cfg(target_os = "macos")]
+fn find_app_bundle(exe_path: &Path) -> Option<PathBuf> {
+    let canonical = exe_path.canonicalize().ok()?;
+    let path_str = canonical.to_str()?;
+    let idx = path_str.find(".app/Contents/MacOS/")?;
+    let app_end = idx + ".app".len();
+    Some(PathBuf::from(&path_str[..app_end]))
+}
+
 /// Prompt user to configure Full Disk Access before starting the service.
 /// Opens System Settings and waits for the user to complete setup.
 #[cfg(target_os = "macos")]
@@ -480,7 +542,6 @@ fn prompt_fda_setup() {
     eprintln!("  フルディスクアクセスの設定画面を開きます。");
     eprintln!("  \x1b[1mAuthsockWarden.app\x1b[0m を追加・有効化してください。");
     eprintln!();
-    eprintln!("  \x1b[2m既に設定済みの場合はそのまま Enter で続行できます。\x1b[0m");
     eprintln!("  \x1b[2m誤って拒否した場合も同じ画面から変更できます。\x1b[0m");
     eprintln!();
 

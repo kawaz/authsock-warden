@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use args::{CompletionArgs, LogArgs, RegisterArgs, RunArgs, UnregisterArgs};
+pub use internal::InternalCommand;
 
 /// SSH agent proxy with key filtering, process-aware access control, and 1Password integration
 #[derive(Parser, Debug)]
@@ -73,6 +74,27 @@ pub enum Commands {
 
     #[command(hide = true)]
     Version,
+
+    /// Internal commands (not for direct use)
+    #[command(hide = true)]
+    Internal {
+        #[command(subcommand)]
+        command: InternalCommand,
+    },
+}
+
+mod internal {
+    use super::*;
+
+    #[derive(Subcommand, Debug, Clone)]
+    pub enum InternalCommand {
+        /// Check Full Disk Access status (writes result to file)
+        FdaCheck {
+            /// Path to write result ("ok" or "denied")
+            #[arg(long)]
+            result_file: PathBuf,
+        },
+    }
 }
 
 #[derive(Subcommand, Debug, Clone)]
