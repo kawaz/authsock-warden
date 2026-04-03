@@ -30,15 +30,9 @@ run *ARGS: build
     ./target/release/authsock-warden {{ARGS}}
 
 # リリース (bump: major, minor, patch)
-release bump="patch":
+release bump="patch": check test build
     #!/usr/bin/env bash
     set -euo pipefail
-
-    # Pre-checks
-    cargo fmt --check || { echo "Error: Run 'cargo fmt' first." >&2; exit 1; }
-    cargo clippy -- -D warnings
-    cargo build --release
-    cargo test
 
     # Version bump
     current=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
@@ -64,7 +58,7 @@ release bump="patch":
         exit 1
     fi
 
-    # Commit and push (GitHub Actions will create tag + release automatically)
+    # Commit and push (GitHub Actions creates tag + release automatically)
     jj describe -m "Release v${new_version}"
     jj new
     jj bookmark set main -r @-
