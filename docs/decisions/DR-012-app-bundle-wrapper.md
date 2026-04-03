@@ -67,18 +67,29 @@ AuthsockWarden.app/
 ditto で zip → notarytool submit → stapler staple
 ```
 
-### Homebrew Formula
+### Homebrew 配布: Formula + Cask の2本立て
 
-- **macOS**: `prefix.install "AuthsockWarden.app"` + `bin` ディレクトリへ symlink
-- **Linux**: 変更なし (.app バンドルは macOS 専用)
+当初は Formula 内で .app バンドルを配布する方式を試みたが、以下の理由で Cask に分離した:
+
+- **Homebrew の慣習**: .app バンドルの配布は Cask が標準。Formula で .app を扱うのは非標準的
+- **tarball stripping 問題**: Homebrew は tar.gz 内のトップレベルディレクトリが1つの場合に自動で strip する。.app のみを含む tarball では .app の中に cd してしまい、インストールが失敗した (v0.1.12 で発覚)
+- **責務の分離**: Formula は全プラットフォーム共通のベアバイナリ配布、Cask は macOS 固有の .app バンドル配布
+
+構成:
+- **Formula** (`Formula/authsock-warden.rb`): `bin.install "authsock-warden"` — 全プラットフォーム共通
+- **Cask** (`Casks/authsock-warden.rb`): `app "AuthsockWarden.app"` + `binary` stanza — macOS 専用
+
+macOS ユーザーは `brew install --cask kawaz/tap/authsock-warden` でインストール。
 
 ### サービス登録
 
-既存の `argv[0]` ベースのパス解決で安定 symlink (`/opt/homebrew/bin/authsock-warden`) を使用する。Homebrew が管理する symlink は upgrade 後も同じパスを維持するため、LaunchAgent plist の `ProgramArguments` を書き換える必要がない。
+Cask でインストールした場合、.app は `/Applications/AuthsockWarden.app` に配置される。`binary` stanza により `/opt/homebrew/bin/authsock-warden` にシンボリックリンクが作成される。
+
+service register は既存の `argv[0]` ベースのパス解決で安定 symlink を使用する。
 
 ## リスク/トレードオフ
 
-- **.app バンドルは macOS のみ**: Linux には影響なし。プラットフォーム固有のビルド成果物が増えるが、CI で分岐すれば管理可能
-- **Homebrew の ad-hoc 再署名**: Cask は再署名するが、Formula (ソースビルド) では再署名されない。本プロジェクトは Formula で配布するため問題なし
-- **brew upgrade 後のサービス reload**: upgrade 後にサービスの再起動が必要。これは .app 導入前から同様であり、新たなデメリットではない
-- **バイナリの場所がわかりにくい**: .app 内部にバイナリがあるため直感的でないが、`bin` に symlink があるので CLI としての使用感は変わらない
+- **.app バンドルは macOS のみ**: Linux には影響なし
+- **2つのインストール方法**: macOS で Formula（ベアバイナリ）と Cask（.app）の両方が選べる。TCC 永続化が必要なら Cask を使う
+- **brew upgrade 後のサービス reload**: upgrade 後にサービスの再起動が必要。これは .app 導入前から同様
+- **Cask の /Applications 配置**: Cask は .app を /Applications/ に配置する。CLI ツールとしては不自然だが、`binary` stanza で CLI パスが通るので使用感は変わらない
