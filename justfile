@@ -59,7 +59,7 @@ release bump="patch": ensure-clean check test build
     else
         changes=$(jj log -r '..@-' --no-graph -T 'description ++ "\n"' 2>/dev/null || echo "")
     fi
-    claude -p "CHANGELOG.mdに v${new_version} ($(date +%Y-%m-%d)) のセクションを追加してください。以下のコミットログを元にKeep a Changelog形式でAdded/Changed/Fixedに分類: ${changes}"
+    claude -p "CHANGELOG.mdに v${new_version} ($(date +%Y-%m-%d)) のセクションを追加してください。以下のコミットログを元に、利用者視点で重要な順に記載: 新機能 / 動作変更(破壊的変更は特に明記) / バグ修正 / その他。内部リファクタやCI変更など利用者に影響しないものは省略可。コミットログ: ${changes}"
 
     # Commit and push (GitHub Actions creates tag + release automatically)
     jj describe -m "Release v${new_version}"
