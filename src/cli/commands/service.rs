@@ -529,7 +529,9 @@ fn find_app_bundle(exe_path: &Path) -> Option<PathBuf> {
 }
 
 /// Prompt user to configure Full Disk Access before starting the service.
-/// Opens System Settings and waits for the user to complete setup.
+/// Opens System Settings, polls for FDA grant, and proceeds automatically
+/// when granted. If the user presses Enter without granting, warns about
+/// recurring TCC dialogs but proceeds anyway.
 #[cfg(target_os = "macos")]
 fn prompt_fda_setup() {
     eprintln!();
@@ -540,9 +542,10 @@ fn prompt_fda_setup() {
     eprintln!("  Full Disk Access の許可が必要です。");
     eprintln!();
     eprintln!("  フルディスクアクセスの設定画面を開きます。");
-    eprintln!("  \x1b[1mAuthsockWarden.app\x1b[0m を追加・有効化してください。");
+    eprintln!("  \x1b[1mAuthsockWarden.app\x1b[0m を ON にしてください。");
     eprintln!();
     eprintln!("  \x1b[2m誤って拒否した場合も同じ画面から変更できます。\x1b[0m");
+    eprintln!("  \x1b[2mFDA なしで続行する場合は Enter を押してください。\x1b[0m");
     eprintln!();
 
     // Open System Settings to Full Disk Access page
@@ -550,9 +553,54 @@ fn prompt_fda_setup() {
         .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
         .status();
 
-    // Wait for user to complete FDA setup before starting the service
-    eprint!("設定が完了したら Enter を押してください...");
-    let _ = std::io::stdin().read_line(&mut String::new());
+    // Poll for FDA grant while waiting for Enter
+    let fda_granted = wait_for_fda_or_enter();
+
+    if fda_granted {
+        eprintln!("\x1b[32mFull Disk Access が有効になりました。\x1b[0m");
+    } else {
+        eprintln!();
+        eprintln!("\x1b[33mFull Disk Access なしで続行します。\x1b[0m");
+        eprintln!();
+        eprintln!("  FDA が未設定の場合、サービス起動時やアップグレード後に");
+        eprintln!("  「ほかのアプリからのデータへのアクセス権」ダイアログが");
+        eprintln!("  毎回表示されます。後から設定するには:");
+        eprintln!("    authsock-warden service register");
+        eprintln!("  を再実行してください。");
+        eprintln!();
+    }
+}
+
+/// Wait for FDA to be granted (via polling) or for the user to press Enter.
+/// Returns true if FDA was granted, false if the user pressed Enter first.
+#[cfg(target_os = "macos")]
+fn wait_for_fda_or_enter() -> bool {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let (tx, rx) = mpsc::channel();
+
+    // Spawn thread to wait for Enter
+    let tx_enter = tx.clone();
+    std::thread::spawn(move || {
+        eprint!("FDA を ON にするか、Enter で続行...");
+        let _ = std::io::stdin().read_line(&mut String::new());
+        let _ = tx_enter.send(false);
+    });
+
+    // Spawn thread to poll FDA status
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(2));
+            if check_fda_via_app().unwrap_or(false) {
+                let _ = tx.send(true);
+                return;
+            }
+        }
+    });
+
+    // Wait for whichever comes first
+    rx.recv().unwrap_or(false)
 }
 
 #[cfg(target_os = "macos")]
