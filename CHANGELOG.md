@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.12] - 2026-04-03
+
+### Added
+
+- macOS バイナリを .app バンドルとしてパッケージング。TCC パーミッション（Accessibility 等）がアプリ単位で永続化され、アップデート後の再許可が不要に。
+
+### Security
+
+- 秘密鍵の PEM 文字列および Ed25519 シードのメモリゼロ化を強化
+- ソケットバインド時に制限的な umask を設定し、TOCTOU 競合条件を防止
+- プロトコルエンコーディングの整数キャストを安全な `try_from` に置換
+
+### Fixed
+
+- `service` および `config` サブコマンドのヘルプ説明文が欠落していた問題を修正
+
 ## [0.1.11] - 2026-04-03
 
 ### Changed
