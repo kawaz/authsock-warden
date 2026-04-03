@@ -2,6 +2,7 @@
 name = "authsock-warden"
 version = "0.1.11"
 edition = "2024"
+rust-version = "1.85"
 authors = ["Yoshiaki Kawazu <kawazzz@gmail.com>"]
 license = "MIT"
 description = "SSH agent proxy with key filtering, process-aware access control, and 1Password integration"
@@ -74,3 +75,4 @@ tokio-test = "0.4"
 [profile.release]
 lto = true
 strip = true
+codegen-units = 1
