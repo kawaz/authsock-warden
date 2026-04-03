@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Apple codesign + Hardened Runtime + Notarization for macOS binaries
+- Auto-tag release via GitHub Actions (no manual tag push needed)
+- just push recipe with quality gate (check + test before push)
+- pre-push-check hook blocks direct push, forces just push
+- ensure-clean check before release
+- musl build targets (x86_64 + aarch64)
+- op_account config field for multi-account 1Password
+
+### Fixed
+
+- Logs to stderr (fixes run --print-config piping)
+- Security protections only during run (not config/service/version)
+- Homebrew tap diff check (no redundant commits)
+- claude -p for non-interactive CHANGELOG update
+- filter.ensure_loaded() in WardProxy (fixes github/keyfile filters)
+- Share op_state across all WardProxy instances
+- Include PATH in launchd plist for op CLI access
+- Register calls unregister first for clean restart
+
 ## [0.1.8] - 2026-04-03
 
 ### Fixed
