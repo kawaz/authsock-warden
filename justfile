@@ -23,7 +23,7 @@ fmt:
 
 # ワーキングコピーがクリーン（empty）であることを確認
 ensure-clean:
-    jj log -r @ --no-graph -T 'if(empty, "", "dirty\n")' | grep -q '^$'
+    test "$(jj log -r @ --no-graph -T 'empty')" = "true"
 
 # push (check + test を通してから push)
 push: check test
