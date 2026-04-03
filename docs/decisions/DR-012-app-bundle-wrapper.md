@@ -90,6 +90,6 @@ service register は既存の `argv[0]` ベースのパス解決で安定 symlin
 ## リスク/トレードオフ
 
 - **.app バンドルは macOS のみ**: Linux には影響なし
-- **2つのインストール方法**: macOS で Formula（ベアバイナリ）と Cask（.app）の両方が選べる。TCC 永続化が必要なら Cask を使う
+- **macOS は Cask 一択**: authsock-warden は LaunchAgent 常駐が主要ユースケース。LaunchAgent 経由では TCC 問題が必ず発生するため、macOS ユーザー全員に .app バンドルが必要。Formula の macOS 対応は削除し、Cask に誘導する（`odie` で案内）
 - **brew upgrade 後のサービス reload**: upgrade 後にサービスの再起動が必要。これは .app 導入前から同様
 - **Cask の /Applications 配置**: Cask は .app を /Applications/ に配置する。CLI ツールとしては不自然だが、`binary` stanza で CLI パスが通るので使用感は変わらない

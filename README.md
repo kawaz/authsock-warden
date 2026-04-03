@@ -32,7 +32,10 @@ SSH clients --> socket C -|                      |-> Local key files
 ## Installation
 
 ```bash
-# Homebrew (macOS / Linux)
+# Homebrew (macOS) — .app bundle for TCC permission persistence
+brew install --cask kawaz/tap/authsock-warden
+
+# Homebrew (Linux)
 brew install kawaz/tap/authsock-warden
 
 # From source

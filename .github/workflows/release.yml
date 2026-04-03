@@ -265,14 +265,7 @@ jobs:
             license "MIT"
 
             on_macos do
-              on_arm do
-                url "https://github.com/kawaz/authsock-warden/releases/download/v#{version}/authsock-warden-aarch64-apple-darwin.tar.gz"
-                sha256 "${{ steps.checksums.outputs.darwin_arm64 }}"
-              end
-              on_intel do
-                url "https://github.com/kawaz/authsock-warden/releases/download/v#{version}/authsock-warden-x86_64-apple-darwin.tar.gz"
-                sha256 "${{ steps.checksums.outputs.darwin_amd64 }}"
-              end
+              odie "Use 'brew install --cask kawaz/tap/authsock-warden' on macOS"
             end
 
             on_linux do
