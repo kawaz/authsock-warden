@@ -470,7 +470,7 @@ fn has_op_sources(config_file: &crate::config::ConfigFile) -> bool {
 /// This runs the fda-check internal command as the .app's own TCC identity.
 /// Returns Ok(true) if FDA is granted, Ok(false) if denied or not running from .app.
 #[cfg(target_os = "macos")]
-fn check_fda_via_app() -> Result<bool> {
+pub fn check_fda_via_app() -> Result<bool> {
     // Resolve .app path from current exe
     let exe = std::env::current_exe().context("Failed to get current executable path")?;
     let Some(app_path) = find_app_bundle(&exe) else {
@@ -486,7 +486,8 @@ fn check_fda_via_app() -> Result<bool> {
     let result_file =
         std::env::temp_dir().join(format!("authsock-warden-fda-check-{}", std::process::id()));
 
-    // Run fda-check via `open --wait-apps` so it runs as the .app (own TCC identity)
+    // Run fda-check --raw via `open --wait-apps` so it runs as the .app (own TCC identity)
+    // Suppress stderr from `open` (LSBackgroundOnly apps cause "Unable to block" noise)
     let status = std::process::Command::new("open")
         .args([
             "--wait-apps",
@@ -494,11 +495,13 @@ fn check_fda_via_app() -> Result<bool> {
             "--args",
             "internal",
             "fda-check",
+            "--raw",
             "--result-file",
             result_file
                 .to_str()
                 .context("Temp file path contains invalid UTF-8")?,
         ])
+        .stderr(std::process::Stdio::null())
         .status()
         .context("Failed to run 'open' command for FDA check")?;
 

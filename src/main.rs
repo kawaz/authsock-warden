@@ -85,29 +85,49 @@ async fn run(cli: Cli) -> Result<(), (ExitCode, anyhow::Error)> {
             authsock_warden::cli::commands::version::print_version(cli.verbose);
         }
         Commands::Internal { command } => match command {
-            InternalCommand::FdaCheck { result_file } => {
-                #[cfg(target_os = "macos")]
-                {
-                    let tcc_db =
-                        std::path::Path::new("/Library/Application Support/com.apple.TCC/TCC.db");
-                    let has_fda = std::fs::File::open(tcc_db).is_ok();
-                    std::fs::write(&result_file, if has_fda { "ok" } else { "denied" }).map_err(
-                        |e| {
-                            (
-                                ExitCode::GeneralError,
-                                anyhow::anyhow!("Failed to write FDA check result: {}", e),
-                            )
-                        },
-                    )?;
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    std::fs::write(&result_file, "ok").map_err(|e| {
+            InternalCommand::FdaCheck { result_file, raw } => {
+                let result = if raw {
+                    // Direct TCC check (called from .app context)
+                    #[cfg(target_os = "macos")]
+                    {
+                        let tcc_db = std::path::Path::new(
+                            "/Library/Application Support/com.apple.TCC/TCC.db",
+                        );
+                        if std::fs::File::open(tcc_db).is_ok() {
+                            "ok"
+                        } else {
+                            "denied"
+                        }
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        "ok"
+                    }
+                } else {
+                    // Launch via .app to check with correct TCC identity
+                    #[cfg(target_os = "macos")]
+                    {
+                        use authsock_warden::cli::commands::service::check_fda_via_app;
+                        if check_fda_via_app().unwrap_or(false) {
+                            "ok"
+                        } else {
+                            "denied"
+                        }
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        "ok"
+                    }
+                };
+                if let Some(path) = result_file {
+                    std::fs::write(&path, result).map_err(|e| {
                         (
                             ExitCode::GeneralError,
                             anyhow::anyhow!("Failed to write FDA check result: {}", e),
                         )
                     })?;
+                } else {
+                    println!("{result}");
                 }
             }
         },

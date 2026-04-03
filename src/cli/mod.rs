@@ -88,11 +88,14 @@ mod internal {
 
     #[derive(Subcommand, Debug, Clone)]
     pub enum InternalCommand {
-        /// Check Full Disk Access status (writes result to file)
+        /// Check Full Disk Access status
         FdaCheck {
-            /// Path to write result ("ok" or "denied")
+            /// Path to write result ("ok" or "denied"). If omitted, prints to stdout.
             #[arg(long)]
-            result_file: PathBuf,
+            result_file: Option<PathBuf>,
+            /// Run the TCC check directly (skip .app re-launch). Used internally.
+            #[arg(long)]
+            raw: bool,
         },
     }
 }
