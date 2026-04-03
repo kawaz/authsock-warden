@@ -854,21 +854,42 @@ impl WardProxy {
 ///
 /// Returns None if the socket doesn't exist.
 fn onepassword_agent_socket() -> Option<std::path::PathBuf> {
+    // Check OP_AGENT_SOCK environment variable first
+    if let Ok(path) = std::env::var("OP_AGENT_SOCK") {
+        let p = std::path::PathBuf::from(path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
     let home = dirs::home_dir()?;
 
     #[cfg(target_os = "macos")]
-    let path = home.join("Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock");
+    {
+        // Prefer symlink at ~/.ssh to avoid macOS TCC privacy dialog
+        // for accessing ~/Library/Group Containers/
+        let symlink_path = home.join(".ssh/agent-1password.sock");
+        if symlink_path.exists() {
+            return Some(symlink_path);
+        }
+
+        // Fallback to direct Group Containers path (may trigger TCC dialog)
+        let direct_path =
+            home.join("Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock");
+        if direct_path.exists() {
+            return Some(direct_path);
+        }
+    }
 
     #[cfg(target_os = "linux")]
-    let path = home.join(".1password/agent.sock");
+    {
+        let path = home.join(".1password/agent.sock");
+        if path.exists() {
+            return Some(path);
+        }
+    }
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    let path = {
-        let _ = home;
-        return None;
-    };
-
-    if path.exists() { Some(path) } else { None }
+    None
 }
 
 #[cfg(test)]
