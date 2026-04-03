@@ -268,6 +268,8 @@ mod launchd {
         pub environment_variables: HashMap<String, String>,
         pub standard_out_path: String,
         pub standard_error_path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub associated_bundle_identifiers: Option<String>,
     }
 
     pub fn plist_path(name: &str) -> Result<PathBuf> {
@@ -327,6 +329,7 @@ mod launchd {
             environment_variables: env,
             standard_out_path: stdout_path.display().to_string(),
             standard_error_path: stderr_path.display().to_string(),
+            associated_bundle_identifiers: Some(label(name)),
         };
 
         let mut buf = Vec::new();
