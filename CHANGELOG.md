@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.15] - 2026-04-03
+
+### Changed
+
+- **Breaking (macOS Homebrew)**: macOS での Homebrew 配布を Cask のみに統一。
+  - `brew install kawaz/tap/authsock-warden`（Formula）は macOS 非サポートとなり、実行すると Cask への移行を案内するメッセージを表示。
+  - macOS ユーザーは `brew install --cask kawaz/tap/authsock-warden` を使用すること。
+  - Linux では引き続き Formula でインストール可能。
+
 ## [0.1.14] - 2026-04-03
 
 ### Changed
