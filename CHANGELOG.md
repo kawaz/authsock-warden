@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-04-03
+
+### Fixed
+
+- Fix APPLE_ID for notarization (was developer@, should be kawaz@)
+
+
 ## [0.1.7] - 2026-04-03
 
 ### Fixed
