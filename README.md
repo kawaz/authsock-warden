@@ -32,11 +32,11 @@ SSH clients --> socket C -|                      |-> Local key files
 ## Installation
 
 ```bash
+# Homebrew (macOS / Linux)
+brew install kawaz/tap/authsock-warden
+
 # From source
 cargo install --path .
-
-# Homebrew (coming soon)
-# brew install kawaz/tap/authsock-warden
 ```
 
 ## Quick Start
