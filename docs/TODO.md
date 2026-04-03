@@ -16,6 +16,8 @@
 ### Low Priority
 - [x] **macOS コード署名** — Hardened Runtime + Notarization (v0.1.9 で実装済み)
 - [x] **.app バンドルラッパー** — TCC 許可の永続化 (DR-012)
+- [x] **Homebrew Formula + Cask 2本立て配布** — Formula (Linux) + Cask (macOS .app) (DR-013)
+- [x] **FDA 案内フロー** — service register 時の FDA チェック + System Settings 自動オープン + ポーリング (DR-014)
 - [ ] **per-key timeout/lock/forget の run コマンド結合** — keystore ライフサイクルを WardProxy に統合
 - [ ] **refresh/status/keys コマンド本実装**
 - [ ] **file: ソース実装**

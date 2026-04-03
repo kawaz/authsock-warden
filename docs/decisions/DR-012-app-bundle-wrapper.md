@@ -67,29 +67,17 @@ AuthsockWarden.app/
 ditto で zip → notarytool submit → stapler staple
 ```
 
-### Homebrew 配布: Formula + Cask の2本立て
+### Homebrew 配布
 
-当初は Formula 内で .app バンドルを配布する方式を試みたが、以下の理由で Cask に分離した:
-
-- **Homebrew の慣習**: .app バンドルの配布は Cask が標準。Formula で .app を扱うのは非標準的
-- **tarball stripping 問題**: Homebrew は tar.gz 内のトップレベルディレクトリが1つの場合に自動で strip する。.app のみを含む tarball では .app の中に cd してしまい、インストールが失敗した (v0.1.12 で発覚)
-- **責務の分離**: Formula は全プラットフォーム共通のベアバイナリ配布、Cask は macOS 固有の .app バンドル配布
-
-構成:
-- **Formula** (`Formula/authsock-warden.rb`): `bin.install "authsock-warden"` — 全プラットフォーム共通
-- **Cask** (`Casks/authsock-warden.rb`): `app "AuthsockWarden.app"` + `binary` stanza — macOS 専用
-
-macOS ユーザーは `brew install --cask kawaz/tap/authsock-warden` でインストール。
-
-### サービス登録
-
-Cask でインストールした場合、.app は `/Applications/AuthsockWarden.app` に配置される。`binary` stanza により `/opt/homebrew/bin/authsock-warden` にシンボリックリンクが作成される。
-
-service register は既存の `argv[0]` ベースのパス解決で安定 symlink を使用する。
+Homebrew での配布戦略は [DR-013](DR-013-homebrew-formula-cask.md) を参照。
 
 ## リスク/トレードオフ
 
 - **.app バンドルは macOS のみ**: Linux には影響なし
-- **macOS は Cask 一択**: authsock-warden は LaunchAgent 常駐が主要ユースケース。LaunchAgent 経由では TCC 問題が必ず発生するため、macOS ユーザー全員に .app バンドルが必要。Formula の macOS 対応は削除し、Cask に誘導する（`odie` で案内）
+- **macOS は .app が必須**: authsock-warden は LaunchAgent 常駐が主要ユースケース。LaunchAgent 経由では TCC 問題が必ず発生するため、macOS ユーザー全員に .app バンドルが必要
 - **brew upgrade 後のサービス reload**: upgrade 後にサービスの再起動が必要。これは .app 導入前から同様
-- **Cask の /Applications 配置**: Cask は .app を /Applications/ に配置する。CLI ツールとしては不自然だが、`binary` stanza で CLI パスが通るので使用感は変わらない
+
+## 関連
+
+- [DR-013](DR-013-homebrew-formula-cask.md) — Homebrew Formula + Cask の2本立て配布
+- [DR-014](DR-014-macos-fda-tcc.md) — macOS FDA (Full Disk Access) による TCC 問題の解決

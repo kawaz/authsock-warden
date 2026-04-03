@@ -32,11 +32,10 @@ SSH clients --> socket C -|                      |-> Local key files
 ## Installation
 
 ```bash
-# Homebrew (macOS) — .app bundle for TCC permission persistence
-brew install --cask kawaz/tap/authsock-warden
-
-# Homebrew (Linux)
+# Homebrew (macOS / Linux)
 brew install kawaz/tap/authsock-warden
+# macOS: Cask (.app bundle) が自動選択される
+# Linux: Formula (bare binary) が自動選択される
 
 # From source
 cargo install --path .
@@ -138,6 +137,12 @@ authsock-warden log --follow
 # Unregister
 authsock-warden service unregister
 ```
+
+### macOS: Full Disk Access (FDA)
+
+`op://` ソースを使用する場合、macOS では Full Disk Access の付与が必要です。`service register` 時に未設定であれば自動的に案内が表示され、System Settings の該当ページが開きます。AuthsockWarden.app を ON にするだけで設定完了です。
+
+FDA なしでも動作しますが、サービス起動時やアップグレード後に TCC ダイアログが毎回表示されます。
 
 ## Configuration Management
 
