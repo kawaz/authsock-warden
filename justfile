@@ -53,7 +53,7 @@ release bump="patch": ensure-clean check test build
     echo "Version: ${current} -> ${new_version}"
 
     # CHANGELOG.md update via Claude
-    claude "CHANGELOG.mdを更新してください。バージョンは v${current} -> v${new_version} です。[Unreleased] セクションの内容を [${new_version}] - $(date +%Y-%m-%d) に変更し、新しい空の [Unreleased] セクションを追加してください。"
+    claude -p "CHANGELOG.mdを更新してください。バージョンは v${current} -> v${new_version} です。[Unreleased] セクションの内容を [${new_version}] - $(date +%Y-%m-%d) に変更し、新しい空の [Unreleased] セクションを追加してください。"
 
     # Verify CHANGELOG was updated
     if ! jj diff --no-pager | grep -q CHANGELOG.md; then
