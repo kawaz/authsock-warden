@@ -11,10 +11,11 @@
 - [ ] **OP_AGENT_SOCK 環境変数** — 1Password agent socket パスをオーバーライド可能に
 - [ ] **キャッシュファイル TOCTOU** — tempfile + rename でアトミック書き込み
 - [ ] **sign_with_op 並行フェッチ排他** — 同じ鍵への並行署名で複数回 TouchID が出る問題
-- [ ] **warden_proxy.rs 分割** — 800行超で大きすぎる。op 発見ロジックを別ファイルに
+- [ ] **warden_proxy.rs 分割** — 960行超で大きすぎる。op 発見ロジックを別ファイルに
 
 ### Low Priority
-- [ ] **macOS コード署名** — Hardened Runtime + Notarization (Apple Developer secrets 必要)
+- [x] **macOS コード署名** — Hardened Runtime + Notarization (v0.1.9 で実装済み)
+- [x] **.app バンドルラッパー** — TCC 許可の永続化 (DR-012)
 - [ ] **per-key timeout/lock/forget の run コマンド結合** — keystore ライフサイクルを WardProxy に統合
 - [ ] **refresh/status/keys コマンド本実装**
 - [ ] **file: ソース実装**
