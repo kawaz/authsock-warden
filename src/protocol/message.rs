@@ -273,9 +273,12 @@ impl AgentMessage {
         payload.put_u32(count);
 
         for identity in identities {
-            payload.put_u32(identity.key_blob.len() as u32);
+            payload.put_u32(
+                u32::try_from(identity.key_blob.len()).expect("key blob exceeds u32::MAX"),
+            );
             payload.put_slice(&identity.key_blob);
-            payload.put_u32(identity.comment.len() as u32);
+            payload
+                .put_u32(u32::try_from(identity.comment.len()).expect("comment exceeds u32::MAX"));
             payload.put_slice(identity.comment.as_bytes());
         }
 
@@ -323,7 +326,7 @@ impl AgentMessage {
     pub fn encode(&self) -> Bytes {
         let total_len = 1 + self.payload.len();
         let mut buf = BytesMut::with_capacity(4 + total_len);
-        buf.put_u32(total_len as u32);
+        buf.put_u32(u32::try_from(total_len).expect("message exceeds u32::MAX"));
         buf.put_u8(self.msg_type.into());
         buf.put_slice(&self.payload);
         buf.freeze()
