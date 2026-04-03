@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.17] - 2026-04-03
+
+### Fixed
+
+- `service register` 時の FDA（フルディスクアクセス）セットアップガイダンスを LaunchAgent の起動前に表示するよう修正。従来はサービス起動後に案内していたため、ユーザーが FDA を許可する前に TCC ダイアログが表示されていた。
+
 ## [0.1.16] - 2026-04-03
 
 ### Added
