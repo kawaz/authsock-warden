@@ -39,6 +39,72 @@ jobs:
             cargo build --release --target ${{ matrix.target }}
           fi
 
+      - name: Import signing certificate (macOS)
+        if: runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_BASE64 != ''
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          echo -n "$APPLE_CERTIFICATE_BASE64" | base64 --decode -o $CERTIFICATE_PATH
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          security import $CERTIFICATE_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+      - name: Sign binary (macOS)
+        if: runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY != ''
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          codesign --sign "$APPLE_SIGNING_IDENTITY" \
+            --options runtime \
+            --force \
+            target/${{ matrix.target }}/release/authsock-warden
+
+          echo "Signed binary:"
+          codesign -dv --verbose=2 target/${{ matrix.target }}/release/authsock-warden
+
+      - name: Notarize binary (macOS)
+        if: runner.os == 'macOS' && secrets.APPLE_ID != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool store-credentials "notary-profile" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --keychain $RUNNER_TEMP/app-signing.keychain-db
+
+          cd target/${{ matrix.target }}/release
+          zip notarize.zip authsock-warden
+
+          xcrun notarytool submit notarize.zip \
+            --keychain-profile "notary-profile" \
+            --keychain $RUNNER_TEMP/app-signing.keychain-db \
+            --wait \
+            --timeout 10m
+
+          rm notarize.zip
+          echo "Notarization complete"
+
+      - name: Clean up keychain (macOS)
+        if: always() && runner.os == 'macOS'
+        run: |
+          if [ -f "$RUNNER_TEMP/app-signing.keychain-db" ]; then
+            security delete-keychain $RUNNER_TEMP/app-signing.keychain-db
+          fi
+
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
