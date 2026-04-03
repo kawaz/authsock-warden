@@ -10,6 +10,7 @@ use signature::Signer;
 use ssh_key::PrivateKey;
 use ssh_key::private::{Ed25519Keypair, Ed25519PrivateKey};
 use tracing::debug;
+use zeroize::Zeroizing;
 
 /// Sign data from an SSH agent SignRequest using a private key.
 ///
@@ -153,7 +154,8 @@ fn parse_pkcs8_ed25519(pem: &str) -> Result<PrivateKey> {
 ///
 /// Looks for the Ed25519 OID (1.3.101.112 = [06 03 2b 65 70]), then
 /// navigates to the nested OCTET STRING containing the 32-byte seed.
-fn extract_ed25519_seed_from_pkcs8(der: &[u8]) -> Result<[u8; 32]> {
+/// The returned seed is wrapped in `Zeroizing` for secure memory erasure.
+fn extract_ed25519_seed_from_pkcs8(der: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
     const ED25519_OID: &[u8] = &[0x06, 0x03, 0x2b, 0x65, 0x70];
 
     let oid_pos = der
@@ -206,7 +208,7 @@ fn extract_ed25519_seed_from_pkcs8(der: &[u8]) -> Result<[u8; 32]> {
         .get(2..2 + inner_len)
         .ok_or_else(|| Error::KeyStore("PKCS#8: Ed25519 seed data truncated".to_string()))?;
 
-    let mut seed = [0u8; 32];
+    let mut seed = Zeroizing::new([0u8; 32]);
     seed.copy_from_slice(seed_bytes);
     Ok(seed)
 }

@@ -12,6 +12,7 @@ use serde::Deserialize;
 use std::process::Command;
 use std::sync::OnceLock;
 use tracing::{debug, info};
+use zeroize::{Zeroize, Zeroizing};
 
 /// Global account setting for op CLI (thread-safe, set once at startup)
 static OP_ACCOUNT: OnceLock<String> = OnceLock::new();
@@ -188,10 +189,12 @@ pub fn get_public_key(item_id: &str) -> Result<String> {
 /// Get the private key PEM for an item.
 ///
 /// Returns the private key in PEM format (typically PKCS#8 "BEGIN PRIVATE KEY").
-pub fn get_private_key(item_id: &str) -> Result<String> {
+/// The returned value is wrapped in `Zeroizing` to ensure the PEM string is
+/// securely erased from memory when dropped.
+pub fn get_private_key(item_id: &str) -> Result<Zeroizing<String>> {
     validate_item_id(item_id)?;
     debug!(item_id, "Fetching private key from 1Password");
-    let output = op_command()
+    let mut output = op_command()
         .args([
             "item",
             "get",
@@ -206,6 +209,8 @@ pub fn get_private_key(item_id: &str) -> Result<String> {
         .map_err(|e| Error::KeyStore(format!("Failed to execute op: {}", e)))?;
 
     if !output.status.success() {
+        // Zeroize stdout even on failure — it may contain partial secret data
+        output.stdout.zeroize();
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(Error::KeyStore(format!(
             "op item get (private key) failed: {}",
@@ -213,10 +218,15 @@ pub fn get_private_key(item_id: &str) -> Result<String> {
         )));
     }
 
-    let field: OpFieldValue = serde_json::from_slice(&output.stdout)
-        .map_err(|e| Error::KeyStore(format!("Failed to parse private key field: {}", e)))?;
+    let field: OpFieldValue = serde_json::from_slice(&output.stdout).map_err(|e| {
+        output.stdout.zeroize();
+        Error::KeyStore(format!("Failed to parse private key field: {}", e))
+    })?;
 
-    Ok(field.value)
+    // Zeroize the raw stdout buffer now that the PEM value has been extracted
+    output.stdout.zeroize();
+
+    Ok(Zeroizing::new(field.value))
 }
 
 #[cfg(test)]
