@@ -52,8 +52,14 @@ release bump="patch": ensure-clean check test build
     cargo check --quiet
     echo "Version: ${current} -> ${new_version}"
 
-    # CHANGELOG.md update via Claude
-    claude -p "CHANGELOG.mdを更新してください。バージョンは v${current} -> v${new_version} です。[Unreleased] セクションの内容を [${new_version}] - $(date +%Y-%m-%d) に変更し、新しい空の [Unreleased] セクションを追加してください。"
+    # CHANGELOG.md update via Claude (auto-generate from commit log)
+    latest_tag=$(gh release list --repo kawaz/authsock-warden --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null || echo "")
+    if [ -n "$latest_tag" ]; then
+        changes=$(jj log -r "$latest_tag..@-" --no-graph -T 'description ++ "\n"' 2>/dev/null || echo "")
+    else
+        changes=$(jj log -r '..@-' --no-graph -T 'description ++ "\n"' 2>/dev/null || echo "")
+    fi
+    claude -p "CHANGELOG.mdに v${new_version} ($(date +%Y-%m-%d)) のセクションを追加してください。以下のコミットログを元にKeep a Changelog形式でAdded/Changed/Fixedに分類: ${changes}"
 
     # Commit and push (GitHub Actions creates tag + release automatically)
     jj describe -m "Release v${new_version}"
