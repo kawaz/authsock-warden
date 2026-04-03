@@ -21,6 +21,10 @@ check:
 fmt:
     cargo fmt
 
+# push (check + test を通してから push)
+push: check test
+    jj git push
+
 # ビルドして実行
 run *ARGS: build
     ./target/release/authsock-warden {{ARGS}}
