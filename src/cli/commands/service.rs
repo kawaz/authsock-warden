@@ -436,6 +436,11 @@ pub async fn register(args: RegisterArgs, config_override: Option<PathBuf>) -> R
 
     println!("Created: {}", plist_path.display());
 
+    // Show FDA guidance before starting service (op:// sources need FDA)
+    if has_op_sources(&config_file) {
+        prompt_fda_setup();
+    }
+
     // Load and start the service
     let status = std::process::Command::new("launchctl")
         .args(["load", "-w", plist_path_str])
@@ -449,11 +454,6 @@ pub async fn register(args: RegisterArgs, config_override: Option<PathBuf>) -> R
     println!("Service registered and started successfully!");
     println!("Config: {}", config_path.display());
 
-    // Show FDA guidance if op:// sources are configured
-    if has_op_sources(&config_file) {
-        print_fda_guidance();
-    }
-
     Ok(())
 }
 
@@ -466,28 +466,32 @@ fn has_op_sources(config_file: &crate::config::ConfigFile) -> bool {
         .any(|s| s.members.iter().any(|m| m.starts_with("op://")))
 }
 
-/// Print Full Disk Access guidance for macOS LaunchAgent with 1Password
+/// Prompt user to configure Full Disk Access before starting the service.
+/// Opens System Settings and waits for the user to complete setup.
 #[cfg(target_os = "macos")]
-fn print_fda_guidance() {
+fn prompt_fda_setup() {
     eprintln!();
-    eprintln!("\x1b[33mNote: Full Disk Access が必要です\x1b[0m");
+    eprintln!("\x1b[33mFull Disk Access の設定が必要です\x1b[0m");
     eprintln!();
-    eprintln!("  1Password データへのアクセスに Full Disk Access の許可が必要です。");
-    eprintln!("  LaunchAgent として動作する authsock-warden が 1Password CLI (op) を");
-    eprintln!("  呼び出す際に、1Password のデータ領域にアクセスします。");
+    eprintln!("  authsock-warden は 1Password CLI (op) を使って鍵を取得します。");
+    eprintln!("  LaunchAgent として動作する場合、1Password のデータ領域へのアクセスに");
+    eprintln!("  Full Disk Access の許可が必要です。");
     eprintln!();
-    eprintln!("  \x1b[1m設定方法:\x1b[0m");
-    eprintln!("    システム設定 > プライバシーとセキュリティ > フルディスクアクセス");
-    eprintln!("    で \x1b[1mAuthsockWarden.app\x1b[0m を追加してください。");
+    eprintln!("  フルディスクアクセスの設定画面を開きます。");
+    eprintln!("  \x1b[1mAuthsockWarden.app\x1b[0m を追加・有効化してください。");
     eprintln!();
-    eprintln!("  \x1b[2m設定済みの場合はこのメッセージを無視してください。\x1b[0m");
-    eprintln!("  \x1b[2m誤って拒否した場合は上記の設定画面から変更できます。\x1b[0m");
+    eprintln!("  \x1b[2m既に設定済みの場合はそのまま Enter で続行できます。\x1b[0m");
+    eprintln!("  \x1b[2m誤って拒否した場合も同じ画面から変更できます。\x1b[0m");
     eprintln!();
 
     // Open System Settings to Full Disk Access page
     let _ = std::process::Command::new("open")
         .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
         .status();
+
+    // Wait for user to complete FDA setup before starting the service
+    eprint!("設定が完了したら Enter を押してください...");
+    let _ = std::io::stdin().read_line(&mut String::new());
 }
 
 #[cfg(target_os = "macos")]
