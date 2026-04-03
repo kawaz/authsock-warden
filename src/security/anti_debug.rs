@@ -2,7 +2,7 @@
 //!
 //! Defense-in-depth protections applied at process startup.
 
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 /// Apply all anti-debug protections.
 ///
@@ -42,7 +42,7 @@ fn deny_ptrace() {
     // PT_DENY_ATTACH = 31
     let ret = unsafe { libc::ptrace(31, 0, std::ptr::null_mut::<libc::c_char>(), 0) };
     if ret == 0 {
-        info!("ptrace denied — debugger attachment blocked");
+        debug!("ptrace denied — debugger attachment blocked");
     } else {
         warn!(
             "Failed to deny ptrace (errno: {})",
@@ -79,7 +79,7 @@ fn disable_core_dumps() {
     };
     let ret = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &rlimit) };
     if ret == 0 {
-        info!("Core dumps disabled");
+        debug!("Core dumps disabled");
     } else {
         warn!(
             "Failed to disable core dumps (errno: {})",
