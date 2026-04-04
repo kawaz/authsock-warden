@@ -10,7 +10,7 @@ use crate::utils::path::expand_path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::watch;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub async fn execute(args: RunArgs, config_path: Option<PathBuf>) -> anyhow::Result<()> {
     // Load config from file, then overlay CLI args
@@ -45,6 +45,11 @@ pub async fn execute(args: RunArgs, config_path: Option<PathBuf>) -> anyhow::Res
 
     // Set up shutdown signal
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Check git gpg.ssh.program if op sources are configured
+    if has_op_sources(&config) {
+        check_git_ssh_sign_program();
+    }
 
     // Create shared op_state for all WardProxy instances
     // This ensures op item list is called only once, and private key cache is shared
@@ -347,5 +352,82 @@ async fn wait_for_shutdown() {
     {
         ctrl_c.await.expect("failed to listen for Ctrl+C");
         info!("Received SIGINT");
+    }
+}
+
+/// Check if the config has any op:// sources.
+fn has_op_sources(config: &Config) -> bool {
+    config.sources.iter().any(|source| {
+        source
+            .parse_members()
+            .map(|members| members.iter().any(|m| matches!(m, SourceMember::Op { .. })))
+            .unwrap_or(false)
+    })
+}
+
+/// Warn if git's gpg.ssh.program is set to op-ssh-sign.
+///
+/// When authsock-warden acts as an SSH agent, commit signing via ssh-keygen
+/// benefits from the warden's key cache, reducing TouchID prompts.
+/// Using op-ssh-sign bypasses the warden entirely.
+fn check_git_ssh_sign_program() {
+    let output = std::process::Command::new("git")
+        .args(["config", "--global", "gpg.ssh.program"])
+        .output();
+    if let Ok(output) = output {
+        if output.status.success() {
+            let program = String::from_utf8_lossy(&output.stdout);
+            if program.contains("op-ssh-sign") {
+                warn!(
+                    "git の gpg.ssh.program が op-ssh-sign に設定されています。\
+                     authsock-warden 経由で署名するには ssh-keygen に変更してください: \
+                     git config --global gpg.ssh.program ssh-keygen"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_has_op_sources_empty() {
+        let config = Config::default();
+        assert!(!has_op_sources(&config));
+    }
+
+    #[test]
+    fn test_has_op_sources_with_agent_only() {
+        let mut config = Config::default();
+        config.sources.push(SourceConfig {
+            name: "test".to_string(),
+            members: vec!["agent:/tmp/agent.sock".to_string()],
+        });
+        assert!(!has_op_sources(&config));
+    }
+
+    #[test]
+    fn test_has_op_sources_with_op() {
+        let mut config = Config::default();
+        config.sources.push(SourceConfig {
+            name: "test".to_string(),
+            members: vec!["op://".to_string()],
+        });
+        assert!(has_op_sources(&config));
+    }
+
+    #[test]
+    fn test_has_op_sources_with_mixed() {
+        let mut config = Config::default();
+        config.sources.push(SourceConfig {
+            name: "test".to_string(),
+            members: vec![
+                "agent:/tmp/agent.sock".to_string(),
+                "op://Private".to_string(),
+            ],
+        });
+        assert!(has_op_sources(&config));
     }
 }
