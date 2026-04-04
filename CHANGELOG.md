@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.23] - 2026-04-04
+
+### Added
+
+- `op://` ソース使用時、git の `gpg.ssh.program` が `op-ssh-sign` に設定されていると起動時に警告を表示。`ssh-keygen` に切り替えることで authsock-warden のキーキャッシュが活用され、TouchID の認証回数を削減できる旨を案内する。
+
 ## [0.1.20] - 2026-04-03
 
 ### Changed
