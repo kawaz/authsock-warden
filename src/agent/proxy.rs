@@ -124,7 +124,7 @@ impl Proxy {
     /// Forwards the request to upstream, then filters the response
     /// to only include keys that match the filter rules.
     async fn handle_request_identities(&self, request: AgentMessage) -> Result<AgentMessage> {
-        debug!("Handling REQUEST_IDENTITIES");
+        info!("REQUEST_IDENTITIES received");
 
         let response = self.forward_to_upstream(request).await?;
 
@@ -150,10 +150,19 @@ impl Proxy {
             .collect();
 
         let filtered_count = filtered.len();
+
+        for identity in &filtered {
+            info!(
+                key = %describe_key(identity),
+                comment = %identity.comment,
+                "REQUEST_IDENTITIES exposing key"
+            );
+        }
+
         info!(
             original = original_count,
             filtered = filtered_count,
-            "Filtered identities"
+            "REQUEST_IDENTITIES response"
         );
 
         // Update socket-level shared allowed keys cache
@@ -183,6 +192,9 @@ impl Proxy {
         };
 
         let identity = Identity::new(key_blob.clone(), String::new());
+        let key_desc = describe_key(&identity);
+
+        info!(key = %key_desc, "SIGN_REQUEST received");
 
         // Check cache first, then filter directly
         let is_allowed = {
@@ -191,16 +203,57 @@ impl Proxy {
         } || self.filter.matches(&identity);
 
         if !is_allowed {
-            warn!("Sign request denied: key not allowed by filter");
+            info!(key = %key_desc, "SIGN_REQUEST denied by filter");
             return Ok(AgentMessage::failure());
         }
 
-        self.forward_to_upstream(request).await
+        info!(key = %key_desc, backend = "agent", "Signing with upstream agent");
+
+        let result = self.forward_to_upstream(request).await;
+
+        match &result {
+            Ok(resp) if resp.msg_type == MessageType::SignResponse => {
+                info!(key = %key_desc, "SIGN_REQUEST success");
+            }
+            Ok(resp) => {
+                info!(key = %key_desc, response = ?resp.msg_type, "SIGN_REQUEST failed");
+            }
+            Err(e) => {
+                info!(key = %key_desc, error = %e, "SIGN_REQUEST error");
+            }
+        }
+
+        result
     }
 
     async fn forward_to_upstream(&self, request: AgentMessage) -> Result<AgentMessage> {
         let mut conn = self.upstream.connect().await?;
         conn.send_receive(&request).await
+    }
+}
+
+/// Build a short human-readable description of a key for log output.
+///
+/// Format: `<key_type> <fingerprint_prefix> (<comment>)` or similar,
+/// depending on available information. Never includes private key material.
+fn describe_key(identity: &Identity) -> String {
+    let key_type = identity.key_type().unwrap_or_else(|| "unknown".into());
+    let fp = identity
+        .fingerprint()
+        .map(|f| {
+            let s = f.to_string();
+            // Show first 12 chars of the fingerprint hash (after "SHA256:" prefix)
+            if let Some(hash) = s.strip_prefix("SHA256:") {
+                format!("SHA256:{}...", &hash[..hash.len().min(12)])
+            } else {
+                s
+            }
+        })
+        .unwrap_or_else(|| "unknown-fp".into());
+    if identity.comment.is_empty() {
+        format!("{} {}", key_type, fp)
+    } else {
+        format!("{} {} ({})", key_type, fp, identity.comment)
     }
 }
 

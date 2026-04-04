@@ -198,7 +198,7 @@ impl WardProxy {
     /// (op keys take precedence for the key_backend_map), applies filters,
     /// and returns the combined list.
     async fn handle_request_identities(&self, request: AgentMessage) -> Result<AgentMessage> {
-        debug!("Handling REQUEST_IDENTITIES (WardProxy)");
+        info!("REQUEST_IDENTITIES received");
 
         // Ensure op keys are discovered (lazy init on first call)
         self.ensure_op_initialized().await;
@@ -265,10 +265,19 @@ impl WardProxy {
             .collect();
 
         let filtered_count = filtered.len();
+
+        for identity in &filtered {
+            info!(
+                key = %describe_key(identity),
+                comment = %identity.comment,
+                "REQUEST_IDENTITIES exposing key"
+            );
+        }
+
         info!(
             original = original_count,
             filtered = filtered_count,
-            "Filtered identities (WardProxy)"
+            "REQUEST_IDENTITIES response"
         );
 
         // 5. Update caches
@@ -322,6 +331,9 @@ impl WardProxy {
         };
 
         let identity = Identity::new(key_blob.clone(), String::new());
+        let key_desc = describe_key(&identity);
+
+        info!(key = %key_desc, "SIGN_REQUEST received");
 
         // Check allowed keys cache, then filter directly
         let is_allowed = {
@@ -330,7 +342,7 @@ impl WardProxy {
         } || self.filter.matches(&identity);
 
         if !is_allowed {
-            warn!("Sign request denied: key not allowed by filter (WardProxy)");
+            info!(key = %key_desc, "SIGN_REQUEST denied by filter");
             return Ok(AgentMessage::failure());
         }
 
@@ -340,22 +352,41 @@ impl WardProxy {
             map.get(&key_blob).cloned()
         };
 
-        match backend {
-            Some(SigningBackend::Agent) => self.forward_to_upstream(request).await,
+        let result = match backend {
+            Some(SigningBackend::Agent) => {
+                info!(key = %key_desc, backend = "agent", "Signing with upstream agent");
+                self.forward_to_upstream(request).await
+            }
             Some(SigningBackend::Op { item_id }) => {
+                info!(key = %key_desc, backend = "op", "Signing with 1Password");
                 self.sign_with_op(&key_blob, &item_id, &request.payload)
                     .await
             }
             None => {
                 // Key not in our backend map — try upstream as fallback
                 if self.upstream.is_some() {
+                    info!(key = %key_desc, backend = "agent-fallback", "Signing with upstream agent (fallback)");
                     self.forward_to_upstream(request).await
                 } else {
-                    warn!("Sign request for unknown key and no upstream available");
-                    Ok(AgentMessage::failure())
+                    info!(key = %key_desc, "SIGN_REQUEST failed: unknown key and no upstream available");
+                    return Ok(AgentMessage::failure());
                 }
             }
+        };
+
+        match &result {
+            Ok(resp) if resp.msg_type == MessageType::SignResponse => {
+                info!(key = %key_desc, "SIGN_REQUEST success");
+            }
+            Ok(resp) => {
+                info!(key = %key_desc, response = ?resp.msg_type, "SIGN_REQUEST failed");
+            }
+            Err(e) => {
+                info!(key = %key_desc, error = %e, "SIGN_REQUEST error");
+            }
         }
+
+        result
     }
 
     /// Sign data locally using an op-managed key.
@@ -847,6 +878,31 @@ impl WardProxy {
                 Ok(AgentMessage::failure())
             }
         }
+    }
+}
+
+/// Build a short human-readable description of a key for log output.
+///
+/// Format: `<key_type> <fingerprint_prefix> (<comment>)` or similar,
+/// depending on available information. Never includes private key material.
+fn describe_key(identity: &Identity) -> String {
+    let key_type = identity.key_type().unwrap_or_else(|| "unknown".into());
+    let fp = identity
+        .fingerprint()
+        .map(|f| {
+            let s = f.to_string();
+            // Show first 16 chars of the fingerprint hash (after "SHA256:" prefix)
+            if let Some(hash) = s.strip_prefix("SHA256:") {
+                format!("SHA256:{}...", &hash[..hash.len().min(12)])
+            } else {
+                s
+            }
+        })
+        .unwrap_or_else(|| "unknown-fp".into());
+    if identity.comment.is_empty() {
+        format!("{} {}", key_type, fp)
+    } else {
+        format!("{} {} ({})", key_type, fp, identity.comment)
     }
 }
 
