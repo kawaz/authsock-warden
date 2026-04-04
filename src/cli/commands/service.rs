@@ -458,6 +458,7 @@ pub async fn register(args: RegisterArgs, config_override: Option<PathBuf>) -> R
 }
 
 /// Check if any source has op:// members (1Password CLI integration)
+#[cfg(target_os = "macos")]
 fn has_op_sources(config_file: &crate::config::ConfigFile) -> bool {
     config_file
         .config
