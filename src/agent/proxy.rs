@@ -5,9 +5,11 @@
 
 use crate::error::Result;
 use crate::filter::FilterEvaluator;
+use crate::policy::process::{ProcessChain, get_peer_pid};
 use crate::protocol::{AgentCodec, AgentMessage, Identity, MessageType};
 use bytes::Bytes;
 use std::collections::HashSet;
+use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::net::UnixStream;
@@ -72,13 +74,16 @@ impl Proxy {
     /// Handle a client connection
     pub async fn handle_client(&self, mut client_stream: UnixStream) -> Result<()> {
         let client_id = self.connection_counter.fetch_add(1, Ordering::Relaxed);
+        let process_chain = get_peer_pid(client_stream.as_raw_fd()).map(ProcessChain::from_pid);
         debug!(
             socket = %self.socket_path,
             client_id = client_id,
             "Client connected"
         );
 
-        let result = self.handle_client_inner(&mut client_stream).await;
+        let result = self
+            .handle_client_inner(&mut client_stream, process_chain.as_ref())
+            .await;
 
         debug!(
             socket = %self.socket_path,
@@ -89,7 +94,11 @@ impl Proxy {
         result
     }
 
-    async fn handle_client_inner(&self, client_stream: &mut UnixStream) -> Result<()> {
+    async fn handle_client_inner(
+        &self,
+        client_stream: &mut UnixStream,
+        process_chain: Option<&ProcessChain>,
+    ) -> Result<()> {
         let (mut client_reader, mut client_writer) = client_stream.split();
 
         loop {
@@ -103,7 +112,7 @@ impl Proxy {
 
             trace!(msg_type = ?request.msg_type, "Received request from client");
 
-            let response = self.process_request(request).await?;
+            let response = self.process_request(request, process_chain).await?;
 
             AgentCodec::write(&mut client_writer, &response).await?;
         }
@@ -111,10 +120,16 @@ impl Proxy {
         Ok(())
     }
 
-    async fn process_request(&self, request: AgentMessage) -> Result<AgentMessage> {
+    async fn process_request(
+        &self,
+        request: AgentMessage,
+        process_chain: Option<&ProcessChain>,
+    ) -> Result<AgentMessage> {
         match request.msg_type {
-            MessageType::RequestIdentities => self.handle_request_identities(request).await,
-            MessageType::SignRequest => self.handle_sign_request(request).await,
+            MessageType::RequestIdentities => {
+                self.handle_request_identities(request, process_chain).await
+            }
+            MessageType::SignRequest => self.handle_sign_request(request, process_chain).await,
             _ => self.forward_to_upstream(request).await,
         }
     }
@@ -123,7 +138,11 @@ impl Proxy {
     ///
     /// Forwards the request to upstream, then filters the response
     /// to only include keys that match the filter rules.
-    async fn handle_request_identities(&self, request: AgentMessage) -> Result<AgentMessage> {
+    async fn handle_request_identities(
+        &self,
+        request: AgentMessage,
+        process_chain: Option<&ProcessChain>,
+    ) -> Result<AgentMessage> {
         info!("REQUEST_IDENTITIES received");
 
         let response = self.forward_to_upstream(request).await?;
@@ -165,6 +184,24 @@ impl Proxy {
             "REQUEST_IDENTITIES response"
         );
 
+        if let Some(chain) = process_chain {
+            if let Ok(json) = serde_json::to_string(&serde_json::json!({
+                "event": "REQUEST_IDENTITIES",
+                "socket": &self.socket_path,
+                "original": original_count,
+                "filtered": filtered_count,
+                "keys": filtered.iter().map(|id| {
+                    serde_json::json!({
+                        "key": describe_key(id),
+                        "comment": &id.comment,
+                    })
+                }).collect::<Vec<_>>(),
+                "process_chain": chain,
+            })) {
+                info!(target: "authsock_warden::audit", "{}", json);
+            }
+        }
+
         // Update socket-level shared allowed keys cache
         {
             let mut cache = self.allowed_keys_cache.write().await;
@@ -182,7 +219,11 @@ impl Proxy {
     /// Only allows signing with keys that are in the allowed set
     /// (i.e., keys that passed the filter in a previous REQUEST_IDENTITIES),
     /// or keys that match the filter directly.
-    async fn handle_sign_request(&self, request: AgentMessage) -> Result<AgentMessage> {
+    async fn handle_sign_request(
+        &self,
+        request: AgentMessage,
+        process_chain: Option<&ProcessChain>,
+    ) -> Result<AgentMessage> {
         let key_blob = match request.parse_sign_request_key() {
             Ok(blob) => blob,
             Err(e) => {
@@ -204,6 +245,18 @@ impl Proxy {
 
         if !is_allowed {
             info!(key = %key_desc, "SIGN_REQUEST denied by filter");
+            if let Some(chain) = process_chain {
+                if let Ok(json) = serde_json::to_string(&serde_json::json!({
+                    "event": "SIGN_REQUEST",
+                    "socket": &self.socket_path,
+                    "key": &key_desc,
+                    "result": "denied",
+                    "backend": "agent",
+                    "process_chain": chain,
+                })) {
+                    info!(target: "authsock_warden::audit", "{}", json);
+                }
+            }
             return Ok(AgentMessage::failure());
         }
 
@@ -211,15 +264,31 @@ impl Proxy {
 
         let result = self.forward_to_upstream(request).await;
 
-        match &result {
+        let result_str = match &result {
             Ok(resp) if resp.msg_type == MessageType::SignResponse => {
                 info!(key = %key_desc, "SIGN_REQUEST success");
+                "success"
             }
             Ok(resp) => {
                 info!(key = %key_desc, response = ?resp.msg_type, "SIGN_REQUEST failed");
+                "failed"
             }
             Err(e) => {
                 info!(key = %key_desc, error = %e, "SIGN_REQUEST error");
+                "error"
+            }
+        };
+
+        if let Some(chain) = process_chain {
+            if let Ok(json) = serde_json::to_string(&serde_json::json!({
+                "event": "SIGN_REQUEST",
+                "socket": &self.socket_path,
+                "key": &key_desc,
+                "result": result_str,
+                "backend": "agent",
+                "process_chain": chain,
+            })) {
+                info!(target: "authsock_warden::audit", "{}", json);
             }
         }
 

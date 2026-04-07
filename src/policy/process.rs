@@ -6,21 +6,40 @@
 
 use std::path::PathBuf;
 
+use serde::Serialize;
+
 /// Information about a single process
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProcessInfo {
     /// Process ID
     pub pid: u32,
     /// Process name (basename of executable path)
     pub name: String,
     /// Full executable path (if available)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
     /// Parent process ID
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ppid: Option<u32>,
+    /// Real user ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uid: Option<u32>,
+    /// Real group ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gid: Option<u32>,
+    /// Current working directory
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
+    /// Command line arguments
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub argv: Option<Vec<String>>,
+    /// Process start time (Unix epoch seconds)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<u64>,
 }
 
 /// A chain of processes from a starting PID up to init/launchd
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ProcessChain {
     /// Processes in order from the starting PID to the root
     pub chain: Vec<ProcessInfo>,
@@ -122,13 +141,20 @@ fn get_process_info_macos(pid: u32) -> Option<ProcessInfo> {
         .and_then(|n| n.to_str())
         .map(String::from)
         .unwrap_or_else(|| format!("pid:{}", pid));
-    let ppid = get_parent_pid_macos(pid);
+    let bsd = get_bsd_info_macos(pid);
+    let cwd = get_cwd_macos(pid);
+    let argv = get_argv_macos(pid);
 
     Some(ProcessInfo {
         pid,
         name,
         path,
-        ppid,
+        ppid: bsd.ppid,
+        uid: bsd.uid,
+        gid: bsd.gid,
+        cwd,
+        argv,
+        start_time: bsd.start_time,
     })
 }
 
@@ -153,7 +179,16 @@ fn get_process_path_macos(pid: u32) -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
-fn get_parent_pid_macos(pid: u32) -> Option<u32> {
+struct BsdInfoResult {
+    ppid: Option<u32>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+    start_time: Option<u64>,
+}
+
+/// Get PPID, UID, GID, and start time from proc_bsdinfo
+#[cfg(target_os = "macos")]
+fn get_bsd_info_macos(pid: u32) -> BsdInfoResult {
     use std::mem;
 
     let mut info: libc::proc_bsdinfo = unsafe { mem::zeroed() };
@@ -168,11 +203,130 @@ fn get_parent_pid_macos(pid: u32) -> Option<u32> {
     };
 
     if ret > 0 {
-        let ppid = info.pbi_ppid;
-        if ppid > 0 { Some(ppid) } else { None }
+        BsdInfoResult {
+            ppid: if info.pbi_ppid > 0 {
+                Some(info.pbi_ppid)
+            } else {
+                None
+            },
+            uid: Some(info.pbi_ruid),
+            gid: Some(info.pbi_rgid),
+            start_time: if info.pbi_start_tvsec > 0 {
+                Some(info.pbi_start_tvsec)
+            } else {
+                None
+            },
+        }
+    } else {
+        BsdInfoResult {
+            ppid: None,
+            uid: None,
+            gid: None,
+            start_time: None,
+        }
+    }
+}
+
+/// Get current working directory via PROC_PIDVNODEPATHINFO
+#[cfg(target_os = "macos")]
+fn get_cwd_macos(pid: u32) -> Option<PathBuf> {
+    use std::ffi::CStr;
+    use std::mem;
+
+    // proc_vnodepathinfo contains vip_path fields for cwd and root dir
+    let mut pathinfo: libc::proc_vnodepathinfo = unsafe { mem::zeroed() };
+    let ret = unsafe {
+        libc::proc_pidinfo(
+            pid as i32,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            &mut pathinfo as *mut _ as *mut libc::c_void,
+            mem::size_of::<libc::proc_vnodepathinfo>() as i32,
+        )
+    };
+
+    if ret > 0 {
+        let c_str =
+            unsafe { CStr::from_ptr(pathinfo.pvi_cdir.vip_path.as_ptr() as *const libc::c_char) };
+        let path = PathBuf::from(c_str.to_string_lossy().into_owned());
+        if path.as_os_str().is_empty() {
+            None
+        } else {
+            Some(path)
+        }
     } else {
         None
     }
+}
+
+/// Get command line arguments via sysctl(KERN_PROCARGS2)
+#[cfg(target_os = "macos")]
+fn get_argv_macos(pid: u32) -> Option<Vec<String>> {
+    use std::ffi::CStr;
+
+    // First call to get buffer size
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as i32];
+    let mut size: libc::size_t = 0;
+    let ret = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if ret != 0 || size == 0 {
+        return None;
+    }
+
+    // Second call to get the data
+    let mut buf = vec![0u8; size];
+    let ret = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if ret != 0 {
+        return None;
+    }
+    buf.truncate(size);
+
+    // Layout: [argc: i32] [exec_path\0] [padding\0...] [arg0\0] [arg1\0] ... [argN\0] [env...]
+    if buf.len() < std::mem::size_of::<i32>() {
+        return None;
+    }
+    let argc = i32::from_ne_bytes(buf[..4].try_into().ok()?) as usize;
+    let rest = &buf[4..];
+
+    // Skip exec_path (NUL-terminated)
+    let exec_end = rest.iter().position(|&b| b == 0)?;
+    let mut pos = exec_end + 1;
+
+    // Skip NUL padding between exec_path and argv[0]
+    while pos < rest.len() && rest[pos] == 0 {
+        pos += 1;
+    }
+
+    // Read argc arguments
+    let mut args = Vec::with_capacity(argc);
+    for _ in 0..argc {
+        if pos >= rest.len() {
+            break;
+        }
+        let c_str = unsafe { CStr::from_ptr(rest[pos..].as_ptr() as *const libc::c_char) };
+        let arg = c_str.to_string_lossy().into_owned();
+        pos += c_str.to_bytes_with_nul().len();
+        args.push(arg);
+    }
+
+    if args.is_empty() { None } else { Some(args) }
 }
 
 #[cfg(target_os = "macos")]
@@ -208,30 +362,95 @@ fn get_process_info_linux(pid: u32) -> Option<ProcessInfo> {
         .and_then(|n| n.to_str())
         .map(String::from)
         .unwrap_or_else(|| {
-            // Fallback: read /proc/{pid}/comm
             std::fs::read_to_string(format!("/proc/{}/comm", pid))
                 .map(|s| s.trim().to_string())
                 .unwrap_or_else(|_| format!("pid:{}", pid))
         });
-    let ppid = get_parent_pid_linux(pid);
+    let (ppid, start_time, uid, gid) = get_stat_info_linux(pid);
+    let cwd = std::fs::read_link(format!("/proc/{}/cwd", pid)).ok();
+    let argv = get_argv_linux(pid);
 
     Some(ProcessInfo {
         pid,
         name,
         path: exe_path,
         ppid,
+        uid,
+        gid,
+        cwd,
+        argv,
+        start_time,
     })
 }
 
+/// Get PPID, start time, UID, and GID from /proc/{pid}/status and /proc/{pid}/stat
 #[cfg(target_os = "linux")]
-fn get_parent_pid_linux(pid: u32) -> Option<u32> {
-    let status = std::fs::read_to_string(format!("/proc/{}/status", pid)).ok()?;
+fn get_stat_info_linux(pid: u32) -> (Option<u32>, Option<u64>, Option<u32>, Option<u32>) {
+    let status = match std::fs::read_to_string(format!("/proc/{}/status", pid)) {
+        Ok(s) => s,
+        Err(_) => return (None, None, None, None),
+    };
+    let mut ppid = None;
+    let mut uid = None;
+    let mut gid = None;
     for line in status.lines() {
         if let Some(ppid_str) = line.strip_prefix("PPid:\t") {
-            return ppid_str.trim().parse().ok();
+            ppid = ppid_str.trim().parse().ok();
+        } else if let Some(uid_str) = line.strip_prefix("Uid:\t") {
+            // Format: real effective saved filesystem
+            uid = uid_str
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok());
+        } else if let Some(gid_str) = line.strip_prefix("Gid:\t") {
+            gid = gid_str
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok());
         }
     }
-    None
+    // Start time from /proc/{pid}/stat field 22 (starttime in clock ticks)
+    let start_time = std::fs::read_to_string(format!("/proc/{}/stat", pid))
+        .ok()
+        .and_then(|stat| {
+            // Format: pid (comm) state ppid ... field22
+            // Find closing ')' to skip comm which may contain spaces
+            let after_comm = stat.find(')')?.checked_add(2)?;
+            let fields: Vec<&str> = stat[after_comm..].split_whitespace().collect();
+            // field 22 is starttime, which is at index 19 (0-based after state)
+            let ticks: u64 = fields.get(19)?.parse().ok()?;
+            // Convert clock ticks to epoch seconds (approximate)
+            let ticks_per_sec = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64;
+            if ticks_per_sec == 0 {
+                return None;
+            }
+            // Get boot time from /proc/stat
+            let proc_stat = std::fs::read_to_string("/proc/stat").ok()?;
+            let btime: u64 = proc_stat
+                .lines()
+                .find(|l| l.starts_with("btime "))?
+                .split_whitespace()
+                .nth(1)?
+                .parse()
+                .ok()?;
+            Some(btime + ticks / ticks_per_sec)
+        });
+    (ppid, start_time, uid, gid)
+}
+
+/// Get command line arguments from /proc/{pid}/cmdline
+#[cfg(target_os = "linux")]
+fn get_argv_linux(pid: u32) -> Option<Vec<String>> {
+    let data = std::fs::read(format!("/proc/{}/cmdline", pid)).ok()?;
+    if data.is_empty() {
+        return None;
+    }
+    let args: Vec<String> = data
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect();
+    if args.is_empty() { None } else { Some(args) }
 }
 
 #[cfg(target_os = "linux")]
@@ -268,6 +487,11 @@ mod tests {
                 name: "ssh".to_string(),
                 path: None,
                 ppid: None,
+                uid: None,
+                gid: None,
+                cwd: None,
+                argv: None,
+                start_time: None,
             }],
         };
         // Empty allowed list means "allow all"
@@ -283,12 +507,22 @@ mod tests {
                     name: "ssh".to_string(),
                     path: None,
                     ppid: Some(50),
+                    uid: None,
+                    gid: None,
+                    cwd: None,
+                    argv: None,
+                    start_time: None,
                 },
                 ProcessInfo {
                     pid: 50,
                     name: "git".to_string(),
                     path: None,
                     ppid: Some(1),
+                    uid: None,
+                    gid: None,
+                    cwd: None,
+                    argv: None,
+                    start_time: None,
                 },
             ],
         };
@@ -306,18 +540,33 @@ mod tests {
                     name: "ssh".to_string(),
                     path: None,
                     ppid: Some(50),
+                    uid: None,
+                    gid: None,
+                    cwd: None,
+                    argv: None,
+                    start_time: None,
                 },
                 ProcessInfo {
                     pid: 50,
                     name: "git".to_string(),
                     path: None,
                     ppid: Some(10),
+                    uid: None,
+                    gid: None,
+                    cwd: None,
+                    argv: None,
+                    start_time: None,
                 },
                 ProcessInfo {
                     pid: 10,
                     name: "zsh".to_string(),
                     path: None,
                     ppid: Some(1),
+                    uid: None,
+                    gid: None,
+                    cwd: None,
+                    argv: None,
+                    start_time: None,
                 },
             ],
         };
@@ -335,6 +584,11 @@ mod tests {
                 name: "unknown".to_string(),
                 path: None,
                 ppid: None,
+                uid: None,
+                gid: None,
+                cwd: None,
+                argv: None,
+                start_time: None,
             }],
         };
         assert!(!chain.matches_any(&["ssh".to_string(), "git".to_string()]));
@@ -349,12 +603,22 @@ mod tests {
                     name: "ssh".to_string(),
                     path: None,
                     ppid: Some(50),
+                    uid: None,
+                    gid: None,
+                    cwd: None,
+                    argv: None,
+                    start_time: None,
                 },
                 ProcessInfo {
                     pid: 50,
                     name: "git".to_string(),
                     path: None,
                     ppid: None,
+                    uid: None,
+                    gid: None,
+                    cwd: None,
+                    argv: None,
+                    start_time: None,
                 },
             ],
         };
@@ -372,12 +636,22 @@ mod tests {
                     name: "ssh".to_string(),
                     path: None,
                     ppid: Some(50),
+                    uid: None,
+                    gid: None,
+                    cwd: None,
+                    argv: None,
+                    start_time: None,
                 },
                 ProcessInfo {
                     pid: 50,
                     name: "git".to_string(),
                     path: None,
                     ppid: None,
+                    uid: None,
+                    gid: None,
+                    cwd: None,
+                    argv: None,
+                    start_time: None,
                 },
             ],
         };
