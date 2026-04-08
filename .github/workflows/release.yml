@@ -255,35 +255,9 @@ jobs:
           ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
           path: homebrew-tap
 
-      - name: Update formula
+      - name: Remove stale formula if exists
         run: |
-          cat > homebrew-tap/Formula/authsock-warden.rb << 'FORMULA'
-          class AuthsockWarden < Formula
-            desc "SSH agent proxy with key filtering, process-aware access control, and 1Password integration"
-            homepage "https://github.com/kawaz/authsock-warden"
-            version "${{ steps.version.outputs.version }}"
-            license "MIT"
-
-            on_linux do
-              on_arm do
-                url "https://github.com/kawaz/authsock-warden/releases/download/v#{version}/authsock-warden-aarch64-unknown-linux-gnu.tar.gz"
-                sha256 "${{ steps.checksums.outputs.linux_arm64 }}"
-              end
-              on_intel do
-                url "https://github.com/kawaz/authsock-warden/releases/download/v#{version}/authsock-warden-x86_64-unknown-linux-gnu.tar.gz"
-                sha256 "${{ steps.checksums.outputs.linux_amd64 }}"
-              end
-            end
-
-            def install
-              bin.install "authsock-warden"
-            end
-
-            test do
-              assert_match "authsock-warden", shell_output("#{bin}/authsock-warden --version")
-            end
-          end
-          FORMULA
+          rm -f homebrew-tap/Formula/authsock-warden.rb
 
       - name: Update cask
         run: |
@@ -315,6 +289,6 @@ jobs:
           cd homebrew-tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/authsock-warden.rb Casks/authsock-warden.rb
+          git add -A Casks/authsock-warden.rb Formula/
           git diff --staged --quiet || git commit -m "Update authsock-warden to ${{ steps.version.outputs.version }}"
           git push
