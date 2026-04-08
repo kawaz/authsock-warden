@@ -6,11 +6,15 @@
 use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 /// Error type for socket operations
 #[derive(Debug, thiserror::Error)]
 pub enum SocketError {
+    #[error("Socket {path} is already in use by another process")]
+    AlreadyInUse { path: String },
+
     #[error("Refusing to replace symlink at {path}: potential security risk")]
     SymlinkDetected { path: String },
 
@@ -36,6 +40,14 @@ pub fn remove_existing_socket(path: &Path) -> Result<(), SocketError> {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() {
                 return Err(SocketError::SymlinkDetected {
+                    path: path.display().to_string(),
+                });
+            }
+            // If it's a socket file, check whether a listener is active
+            if std::os::unix::fs::FileTypeExt::is_socket(&metadata.file_type())
+                && UnixStream::connect(path).is_ok()
+            {
+                return Err(SocketError::AlreadyInUse {
                     path: path.display().to_string(),
                 });
             }
@@ -94,6 +106,7 @@ pub fn prepare_socket_path(path: &Path) -> Result<(), SocketError> {
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
+    use std::os::unix::net::UnixListener;
     use tempfile::tempdir;
 
     #[test]
@@ -124,6 +137,31 @@ mod tests {
         let result = remove_existing_socket(&link);
         assert!(matches!(result, Err(SocketError::SymlinkDetected { .. })));
         assert!(link.symlink_metadata().is_ok());
+    }
+
+    #[test]
+    fn test_remove_existing_socket_in_use() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("active.sock");
+        let _listener = UnixListener::bind(&path).unwrap();
+
+        let result = remove_existing_socket(&path);
+        assert!(matches!(result, Err(SocketError::AlreadyInUse { .. })));
+        // Socket file should NOT have been removed
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn test_remove_existing_socket_stale() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("stale.sock");
+        // Create a listener and immediately drop it to leave a stale socket
+        drop(UnixListener::bind(&path).unwrap());
+        assert!(path.exists());
+
+        // Stale socket should be removed successfully
+        assert!(remove_existing_socket(&path).is_ok());
+        assert!(!path.exists());
     }
 
     #[test]
