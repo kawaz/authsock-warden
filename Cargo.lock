@@ -85,12 +85,15 @@ dependencies = [
  "dirs 5.0.1",
  "globset",
  "libc",
+ "pkcs8",
  "plist",
  "regex",
  "reqwest",
+ "rsa",
  "scopeguard",
  "serde",
  "serde_json",
+ "sha2",
  "shellexpand",
  "shlex",
  "signature",
@@ -326,6 +329,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid",
+ "pem-rfc7468",
  "zeroize",
 ]
 

@@ -53,7 +53,6 @@ pub fn sign_with_key(
     //   SSH_AGENT_RSA_SHA2_256 = 0x02
     //   SSH_AGENT_RSA_SHA2_512 = 0x04
     // Ed25519 keys ignore flags (algorithm is fixed).
-    // TODO: RSA SHA2 flags are not yet supported; RSA keys should use agent proxy mode.
     let flags = if buf.remaining() >= 4 {
         buf.get_u32()
     } else {
@@ -66,10 +65,14 @@ pub fn sign_with_key(
 
     debug!(data_len = data.len(), flags = flags, "Signing data locally");
 
-    // Sign using the ssh-key crate's Signer trait
-    let signature: ssh_key::Signature = private_key
-        .try_sign(data)
-        .map_err(|e| Error::Protocol(format!("Signing failed: {}", e)))?;
+    // For RSA keys, select the hash algorithm based on flags
+    let signature: ssh_key::Signature = if matches!(private_key.algorithm(), ssh_key::Algorithm::Rsa { .. }) {
+        sign_rsa(private_key, data, flags)?
+    } else {
+        private_key
+            .try_sign(data)
+            .map_err(|e| Error::Protocol(format!("Signing failed: {}", e)))?
+    };
 
     // Encode signature to SSH wire format: string(algorithm) + string(sig_data)
     let sig_blob: Vec<u8> = signature.try_into().map_err(|e: ssh_key::Error| {
@@ -87,14 +90,60 @@ pub fn sign_with_key(
     ))
 }
 
+/// SSH agent protocol flags
+const SSH_AGENT_RSA_SHA2_256: u32 = 0x02;
+const SSH_AGENT_RSA_SHA2_512: u32 = 0x04;
+
+/// Sign data with an RSA key, respecting SSH agent flags for hash algorithm selection.
+fn sign_rsa(private_key: &PrivateKey, data: &[u8], flags: u32) -> Result<ssh_key::Signature> {
+    use rsa::pkcs1v15::SigningKey;
+    use rsa::signature::SignatureEncoding;
+    use ssh_key::private::RsaKeypair;
+
+    let keypair: RsaKeypair = private_key
+        .key_data()
+        .rsa()
+        .ok_or_else(|| Error::Protocol("Expected RSA key data".to_string()))?
+        .clone();
+    let rsa_private: rsa::RsaPrivateKey = keypair.try_into().map_err(|e: ssh_key::Error| {
+        Error::Protocol(format!("RSA key conversion failed: {}", e))
+    })?;
+
+    if flags & SSH_AGENT_RSA_SHA2_512 != 0 {
+        let signing_key = SigningKey::<sha2::Sha512>::new(rsa_private);
+        let sig: rsa::pkcs1v15::Signature = signature::Signer::sign(&signing_key, data);
+        Ok(ssh_key::Signature::new(
+            ssh_key::Algorithm::Other(
+                ssh_key::AlgorithmName::new("rsa-sha2-512")
+                    .map_err(|e| Error::Protocol(format!("Algorithm name error: {}", e)))?,
+            ),
+            sig.to_vec(),
+        )
+        .map_err(|e| Error::Protocol(format!("Signature construction failed: {}", e)))?)
+    } else if flags & SSH_AGENT_RSA_SHA2_256 != 0 {
+        let signing_key = SigningKey::<sha2::Sha256>::new(rsa_private);
+        let sig: rsa::pkcs1v15::Signature = signature::Signer::sign(&signing_key, data);
+        Ok(ssh_key::Signature::new(
+            ssh_key::Algorithm::Other(
+                ssh_key::AlgorithmName::new("rsa-sha2-256")
+                    .map_err(|e| Error::Protocol(format!("Algorithm name error: {}", e)))?,
+            ),
+            sig.to_vec(),
+        )
+        .map_err(|e| Error::Protocol(format!("Signature construction failed: {}", e)))?)
+    } else {
+        // Default: use ssh-key's built-in signing (sha1 / ssh-rsa)
+        private_key
+            .try_sign(data)
+            .map_err(|e| Error::Protocol(format!("RSA signing failed: {}", e)))
+    }
+}
+
 /// Parse a PEM private key string into an ssh-key PrivateKey.
 ///
 /// Supports:
 /// - OpenSSH format ("BEGIN OPENSSH PRIVATE KEY") — any key type supported by ssh-key crate
-/// - PKCS#8 format ("BEGIN PRIVATE KEY") — **Ed25519 only** (as returned by 1Password)
-///
-/// PKCS#8 RSA or ECDSA keys are not supported by the PKCS#8 path.
-/// For those key types, use OpenSSH format or agent proxy mode.
+/// - PKCS#8 format ("BEGIN PRIVATE KEY") — Ed25519 and RSA (as returned by 1Password)
 pub fn parse_private_key(pem: &str) -> Result<PrivateKey> {
     // Try OpenSSH format first (supports all key types)
     if let Ok(key) = PrivateKey::from_openssh(pem) {
@@ -102,17 +151,41 @@ pub fn parse_private_key(pem: &str) -> Result<PrivateKey> {
     }
 
     // Try PKCS#8 PEM format (1Password returns "BEGIN PRIVATE KEY")
-    // Only Ed25519 is supported via this path.
     if pem.contains("BEGIN PRIVATE KEY") {
-        return parse_pkcs8_ed25519(pem);
+        return parse_pkcs8(pem);
     }
 
     Err(Error::KeyStore(
         "Failed to parse private key: unsupported format. \
          Expected OpenSSH (\"BEGIN OPENSSH PRIVATE KEY\") or \
-         PKCS#8 Ed25519 (\"BEGIN PRIVATE KEY\")"
+         PKCS#8 (\"BEGIN PRIVATE KEY\")"
             .to_string(),
     ))
+}
+
+/// Parse a PKCS#8 PEM private key (Ed25519 or RSA).
+fn parse_pkcs8(pem: &str) -> Result<PrivateKey> {
+    // Try Ed25519 first (1Password's Ed25519 output has non-canonical DER)
+    if let Ok(key) = parse_pkcs8_ed25519(pem) {
+        return Ok(key);
+    }
+
+    // Try RSA via the rsa crate's PKCS#8 parser
+    parse_pkcs8_rsa(pem)
+}
+
+/// Parse a PKCS#8-encoded RSA private key PEM.
+fn parse_pkcs8_rsa(pem: &str) -> Result<PrivateKey> {
+    use pkcs8::DecodePrivateKey;
+    use ssh_key::private::RsaKeypair;
+
+    let rsa_key = rsa::RsaPrivateKey::from_pkcs8_pem(pem)
+        .map_err(|e| Error::KeyStore(format!("Failed to parse PKCS#8 RSA key: {}", e)))?;
+
+    let keypair = RsaKeypair::try_from(rsa_key)
+        .map_err(|e| Error::KeyStore(format!("Failed to convert RSA key to SSH format: {}", e)))?;
+
+    Ok(PrivateKey::from(keypair))
 }
 
 /// Parse a PKCS#8-encoded Ed25519 private key PEM.
