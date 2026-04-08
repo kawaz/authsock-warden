@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.24] - 2026-04-08
+
+### Added
+
+- `op://` ソースで RSA 鍵の署名に対応（PKCS#8 形式）。1Password に保存された RSA 鍵でも署名が可能に。
+- プロセスチェーンの監査ログを追加。SSH agent へ接続するプロセスの完全な情報（pid, uid, gid, cwd, argv, start_time）をログに記録。
+
+### Fixed
+
+- `fda-check` の FDA 確認後にシステム設定を自動的に閉じるように修正。FDA チェック失敗時のリトライにも対応。
+- CLI 引数でソースやソケットを指定した場合にデフォルト設定ファイルの読み込みをスキップするよう修正。
+- `op-ssh-sign` 警告メッセージを英語に統一。
+
 ## [0.1.23] - 2026-04-04
 
 ### Added
