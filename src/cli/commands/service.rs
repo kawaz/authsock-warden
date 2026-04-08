@@ -11,6 +11,35 @@ use crate::utils::version_manager::{
     detect_version_manager, find_executable_candidates, is_shim_path, resolve_shim_executable,
 };
 
+/// ANSI color helpers that respect terminal detection.
+fn color(code: &str, text: &str, is_terminal: bool) -> String {
+    if is_terminal {
+        format!("\x1b[{code}m{text}\x1b[0m")
+    } else {
+        text.to_string()
+    }
+}
+
+fn green(text: &str, is_terminal: bool) -> String {
+    color("32", text, is_terminal)
+}
+
+fn red(text: &str, is_terminal: bool) -> String {
+    color("31", text, is_terminal)
+}
+
+fn yellow(text: &str, is_terminal: bool) -> String {
+    color("33", text, is_terminal)
+}
+
+fn bold(text: &str, is_terminal: bool) -> String {
+    color("1", text, is_terminal)
+}
+
+fn dim(text: &str, is_terminal: bool) -> String {
+    color("2", text, is_terminal)
+}
+
 // ============================================================================
 // Executable path resolution
 // ============================================================================
@@ -96,6 +125,8 @@ fn resolve_service_executable(
             let current_canonical = current_exe.canonicalize().ok();
             let current_hash = file_hash(&current_exe);
 
+            let use_color = std::io::IsTerminal::is_terminal(&std::io::stderr());
+
             let mut msg = format!(
                 "Executable is under {} version manager: {}\n\nCandidates:\n",
                 info.name,
@@ -180,19 +211,25 @@ fn resolve_service_executable(
 
                 // Build colored marker string
                 let mut marker_parts = Vec::new();
-                // Add shim info (shim: in green, path in default color)
                 if let Some((ref resolved, _)) = shim_info {
-                    marker_parts.push(format!("\x1b[32mshim:\x1b[0m{}", resolved.display()));
+                    marker_parts.push(format!(
+                        "{}{}",
+                        green("shim:", use_color),
+                        resolved.display()
+                    ));
                 }
-                // Add symlink info (symlink: in green, path in default color)
                 if let Some((ref target, _)) = symlink_info {
-                    marker_parts.push(format!("\x1b[32msymlink:\x1b[0m{}", target.display()));
+                    marker_parts.push(format!(
+                        "{}{}",
+                        green("symlink:", use_color),
+                        target.display()
+                    ));
                 }
                 if !positive_marks.is_empty() {
-                    marker_parts.push(format!("\x1b[32m{}\x1b[0m", positive_marks.join(", ")));
+                    marker_parts.push(green(&positive_marks.join(", "), use_color));
                 }
                 if !negative_marks.is_empty() {
-                    marker_parts.push(format!("\x1b[31m{}\x1b[0m", negative_marks.join(", ")));
+                    marker_parts.push(red(&negative_marks.join(", "), use_color));
                 }
 
                 let marker = if marker_parts.is_empty() {
@@ -205,9 +242,9 @@ fn resolve_service_executable(
                 let is_recommended = !positive_marks.is_empty() && negative_marks.is_empty();
                 let line = format!("  {}. {}{}", i + 1, path.display(), marker);
                 if is_recommended {
-                    msg.push_str(&format!("\x1b[32m{}\x1b[0m\n", line));
+                    msg.push_str(&format!("{}\n", green(&line, use_color)));
                 } else {
-                    msg.push_str(&format!("{}\n", line));
+                    msg.push_str(&format!("{line}\n"));
                 }
             }
 
@@ -220,17 +257,25 @@ fn resolve_service_executable(
             let shim_path = candidates.iter().find(|p| is_shim_path(p));
             if let Some(shim) = shim_path {
                 msg.push_str(&format!(
-                    "\n\x1b[32mRecommended:\x1b[0m\n  {} service register --executable {}\n",
+                    "\n{}\n  {} service register --executable {}\n",
+                    green("Recommended:", use_color),
                     argv0,
                     shim.display()
                 ));
             }
             msg.push_str(&format!(
-                "\n\x1b[33mOr force with current path:\x1b[0m\n  {} service register --force\n",
+                "\n{}\n  {} service register --force\n",
+                yellow("Or force with current path:", use_color),
                 argv0
             ));
 
-            bail!("{}", msg);
+            // Print colored message directly to stderr, then bail with plain summary
+            eprint!("{msg}");
+            bail!(
+                "Executable is under {} version manager: {}",
+                info.name,
+                current_exe.display()
+            );
         }
     }
 
@@ -551,18 +596,25 @@ fn find_app_bundle(exe_path: &Path) -> Option<PathBuf> {
 /// recurring TCC dialogs but proceeds anyway.
 #[cfg(target_os = "macos")]
 fn prompt_fda_setup() {
+    let c = std::io::IsTerminal::is_terminal(&std::io::stderr());
     eprintln!();
-    eprintln!("\x1b[33mFull Disk Access の設定が必要です\x1b[0m");
+    eprintln!("{}", yellow("Full Disk Access の設定が必要です", c));
     eprintln!();
     eprintln!("  authsock-warden は 1Password CLI (op) を使って鍵を取得します。");
     eprintln!("  LaunchAgent として動作する場合、1Password のデータ領域へのアクセスに");
     eprintln!("  Full Disk Access の許可が必要です。");
     eprintln!();
     eprintln!("  フルディスクアクセスの設定画面を開きます。");
-    eprintln!("  \x1b[1mAuthsockWarden.app\x1b[0m を ON にしてください。");
+    eprintln!("  {} を ON にしてください。", bold("AuthsockWarden.app", c));
     eprintln!();
-    eprintln!("  \x1b[2m誤って拒否した場合も同じ画面から変更できます。\x1b[0m");
-    eprintln!("  \x1b[2mFDA なしで続行する場合は Enter を押してください。\x1b[0m");
+    eprintln!(
+        "  {}",
+        dim("誤って拒否した場合も同じ画面から変更できます。", c)
+    );
+    eprintln!(
+        "  {}",
+        dim("FDA なしで続行する場合は Enter を押してください。", c)
+    );
     eprintln!();
 
     // Open System Settings to Full Disk Access page
@@ -574,14 +626,14 @@ fn prompt_fda_setup() {
     let fda_granted = wait_for_fda_or_enter();
 
     if fda_granted {
-        eprintln!("\x1b[32mFull Disk Access が有効になりました。\x1b[0m");
+        eprintln!("{}", green("Full Disk Access が有効になりました。", c));
         // Close System Settings since we opened it
         let _ = std::process::Command::new("osascript")
             .args(["-e", "tell application \"System Settings\" to quit"])
             .status();
     } else {
         eprintln!();
-        eprintln!("\x1b[33mFull Disk Access なしで続行します。\x1b[0m");
+        eprintln!("{}", yellow("Full Disk Access なしで続行します。", c));
         eprintln!();
         eprintln!("  FDA が未設定の場合、サービス起動時やアップグレード後に");
         eprintln!("  「ほかのアプリからのデータへのアクセス権」ダイアログが");
@@ -735,13 +787,15 @@ pub async fn status(args: UnregisterArgs) -> Result<()> {
     let keepalive = stdout.contains("properties = ") && stdout.contains("keepalive");
 
     // Status line
+    let c = std::io::IsTerminal::is_terminal(&std::io::stdout());
     let status_str = match state.as_deref() {
         Some("running") => format!(
-            "\x1b[32mRunning\x1b[0m (pid: {})",
+            "{} (pid: {})",
+            green("Running", c),
             pid.as_deref().unwrap_or("?")
         ),
-        Some(s) => format!("\x1b[31m{}\x1b[0m", s),
-        None => "\x1b[31mUnknown\x1b[0m".to_string(),
+        Some(s) => red(s, c),
+        None => red("Unknown", c),
     };
     println!("Status: {}", status_str);
 
@@ -938,10 +992,13 @@ pub async fn status(args: UnregisterArgs) -> Result<()> {
     };
 
     // Status line
+    let c = std::io::IsTerminal::is_terminal(&std::io::stdout());
     let status_str = match state.as_deref() {
-        Some("active") => format!("\x1b[32mRunning\x1b[0m (pid: {})", pid.unwrap_or_default()),
-        Some(s) => format!("\x1b[31m{}\x1b[0m", s),
-        None => "\x1b[31mUnknown\x1b[0m".to_string(),
+        Some("active") => {
+            format!("{} (pid: {})", green("Running", c), pid.unwrap_or_default())
+        }
+        Some(s) => red(s, c),
+        None => red("Unknown", c),
     };
     println!("Status: {}", status_str);
     println!();
