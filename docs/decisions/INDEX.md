@@ -15,6 +15,9 @@
 - [DR-012](DR-012-app-bundle-wrapper.md) — .app バンドルラッパーによる TCC 許可の永続化
 - [DR-013](DR-013-homebrew-formula-cask.md) — Homebrew Cask のみで配布: macOS は Cask (.app バンドル)、Linux は GitHub Releases 直接取得
 - [DR-014](DR-014-macos-fda-tcc.md) — macOS FDA (Full Disk Access) による TCC 問題の解決: kTCCServiceSystemPolicyAppData の制限を FDA で包含的に回避
+- [DR-015](DR-015-rsa-pkcs8-signing.md) — RSA PKCS#8 署名対応: rsa + pkcs8 クレートで 1Password の PKCS#8 RSA 鍵をパース、SHA2 署名アルゴリズム選択を実装
+- [DR-016](DR-016-cli-args-config-skip-and-fda-retry.md) — CLI 引数時のデフォルト Config スキップと FDA Check Retry
+- [DR-017](DR-017-process-chain-audit-logging.md) — Process Chain Audit Logging: ProcessInfo 拡張 (uid/gid/cwd/argv/start_time) と JSONL 形式の監査ログ
 
 ## Superseded
 
