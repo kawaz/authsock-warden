@@ -66,13 +66,14 @@ pub fn sign_with_key(
     debug!(data_len = data.len(), flags = flags, "Signing data locally");
 
     // For RSA keys, select the hash algorithm based on flags
-    let signature: ssh_key::Signature = if matches!(private_key.algorithm(), ssh_key::Algorithm::Rsa { .. }) {
-        sign_rsa(private_key, data, flags)?
-    } else {
-        private_key
-            .try_sign(data)
-            .map_err(|e| Error::Protocol(format!("Signing failed: {}", e)))?
-    };
+    let signature: ssh_key::Signature =
+        if matches!(private_key.algorithm(), ssh_key::Algorithm::Rsa { .. }) {
+            sign_rsa(private_key, data, flags)?
+        } else {
+            private_key
+                .try_sign(data)
+                .map_err(|e| Error::Protocol(format!("Signing failed: {}", e)))?
+        };
 
     // Encode signature to SSH wire format: string(algorithm) + string(sig_data)
     let sig_blob: Vec<u8> = signature.try_into().map_err(|e: ssh_key::Error| {

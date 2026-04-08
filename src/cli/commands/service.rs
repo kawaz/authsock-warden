@@ -437,7 +437,8 @@ pub async fn register(args: RegisterArgs, config_override: Option<PathBuf>) -> R
     println!("Created: {}", plist_path.display());
 
     // Show FDA guidance before starting service (op:// sources need FDA)
-    if has_op_sources(&config_file) && !check_fda_via_app()? {
+    // Retry a few times since the first check can be slow (app launch latency)
+    if has_op_sources(&config_file) && !check_fda_with_retry()? {
         prompt_fda_setup();
     }
 
@@ -465,6 +466,18 @@ fn has_op_sources(config_file: &crate::config::ConfigFile) -> bool {
         .sources
         .iter()
         .any(|s| s.members.iter().any(|m| m.starts_with("op://")))
+}
+
+/// Check FDA status with retries to handle app launch latency.
+#[cfg(target_os = "macos")]
+fn check_fda_with_retry() -> Result<bool> {
+    for _ in 0..3 {
+        if check_fda_via_app()? {
+            return Ok(true);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    Ok(false)
 }
 
 /// Check FDA status by launching the .app bundle with `open --wait-apps`.
@@ -562,6 +575,10 @@ fn prompt_fda_setup() {
 
     if fda_granted {
         eprintln!("\x1b[32mFull Disk Access が有効になりました。\x1b[0m");
+        // Close System Settings since we opened it
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", "tell application \"System Settings\" to quit"])
+            .status();
     } else {
         eprintln!();
         eprintln!("\x1b[33mFull Disk Access なしで続行します。\x1b[0m");

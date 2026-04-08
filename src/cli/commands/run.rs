@@ -13,8 +13,17 @@ use tokio::sync::watch;
 use tracing::{error, info, warn};
 
 pub async fn execute(args: RunArgs, config_path: Option<PathBuf>) -> anyhow::Result<()> {
-    // Load config from file, then overlay CLI args
-    let mut config = load_config(config_path.as_deref())?;
+    // If --config is not specified but CLI socket/source args are present,
+    // skip auto-detection of config file to avoid loading default config
+    // that may conflict with the CLI-specified sockets (e.g., overwriting
+    // sockets owned by a running daemon).
+    let has_cli_args = !args.source.is_empty() || !args.socket.is_empty();
+    let effective_config_path = if config_path.is_none() && has_cli_args {
+        None
+    } else {
+        config_path
+    };
+    let mut config = load_config(effective_config_path.as_deref())?;
     apply_cli_args(&mut config, &args);
 
     if args.print_config {
