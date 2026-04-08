@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.25] - 2026-04-09
+
+### Fixed
+
+- `run` 時に既存ソケットで別のプロセスが listen 中の場合、上書きせずエラー終了するよう修正。stale ソケット（リスナーなし）は従来通り自動削除。
+
 ## [0.1.24] - 2026-04-08
 
 ### Added
