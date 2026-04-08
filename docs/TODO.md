@@ -4,8 +4,8 @@
 
 ### High Priority
 - [ ] **WardProxy/KeyRegistry 統合** — 秘密鍵キャッシュが KeyRegistry の zeroize 保護をバイパスしている。OpManagedKey.cached_private_key を KeyRegistry に統合すべき
-- [ ] **PKCS#8 パーサー改善** — pkcs8 クレートは 1Password の non-canonical DER を拒否するため断念。1Password 側が修正されるか、lenient モードが追加されるまで現行のパターンマッチを維持。Design rationale コメント追加済み
-- [ ] **RSA 署名 flags 対応** — SSH_AGENT_RSA_SHA2_256/512 フラグに応じてハッシュアルゴリズムを切り替え
+- [x] **PKCS#8 パーサー改善** — pkcs8 クレートは 1Password の non-canonical DER を拒否するため断念。1Password 側が修正されるか、lenient モードが追加されるまで現行のパターンマッチを維持。Design rationale コメント追加済み
+- [x] **RSA 署名 flags 対応** — SSH_AGENT_RSA_SHA2_256/512 フラグに応じてハッシュアルゴリズムを切り替え (v0.1.24)
 
 ### Medium Priority
 - [ ] **OP_AGENT_SOCK 環境変数** — 1Password agent socket パスをオーバーライド可能に
@@ -16,7 +16,7 @@
 ### Low Priority
 - [x] **macOS コード署名** — Hardened Runtime + Notarization (v0.1.9 で実装済み)
 - [x] **.app バンドルラッパー** — TCC 許可の永続化 (DR-012)
-- [x] **Homebrew Formula + Cask 2本立て配布** — Formula (Linux) + Cask (macOS .app) (DR-013)
+- [x] **Homebrew Cask 配布（macOS only, DR-013）**
 - [x] **FDA 案内フロー** — service register 時の FDA チェック + System Settings 自動オープン + ポーリング (DR-014)
 - [ ] **per-key timeout/lock/forget の run コマンド結合** — keystore ライフサイクルを WardProxy に統合
 - [ ] **refresh/status/keys コマンド本実装**
