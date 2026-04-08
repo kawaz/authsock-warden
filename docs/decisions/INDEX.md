@@ -13,7 +13,7 @@
 - [DR-010](DR-010-source-group-design.md) — source グループ設計: members で複数鍵ソースを束ねる、CLI グループ方式と対応
 - [DR-011](DR-011-op-key-discovery-strategy.md) — op 鍵発見の段階的キャッシュ戦略: agent socket リフレッシュ + ディスクキャッシュ + op item list は初回のみ
 - [DR-012](DR-012-app-bundle-wrapper.md) — .app バンドルラッパーによる TCC 許可の永続化
-- [DR-013](DR-013-homebrew-formula-cask.md) — Homebrew Formula + Cask の2本立て配布: Formula は Linux 専用、Cask は macOS 専用 (.app バンドル)
+- [DR-013](DR-013-homebrew-formula-cask.md) — Homebrew Cask のみで配布: macOS は Cask (.app バンドル)、Linux は GitHub Releases 直接取得
 - [DR-014](DR-014-macos-fda-tcc.md) — macOS FDA (Full Disk Access) による TCC 問題の解決: kTCCServiceSystemPolicyAppData の制限を FDA で包含的に回避
 
 ## Superseded
