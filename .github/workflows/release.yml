@@ -255,7 +255,7 @@ jobs:
           ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
           path: homebrew-tap
 
-      - name: Remove stale formula (DR-013: Cask only)
+      - name: "Remove stale formula (DR-013: Cask only)"
         run: rm -f homebrew-tap/Formula/authsock-warden.rb
 
       - name: Update cask
