@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.26] - 2026-04-09
+
+### Fixed
+
+- service コマンドの色付き出力がターミナル判定を尊重するよう修正。非 TTY 環境（tracing 経由のエラー出力等）で `\x1b[32m` がリテラル表示される問題を解消。
+
 ## [0.1.25] - 2026-04-09
 
 ### Fixed
