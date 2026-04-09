@@ -383,16 +383,16 @@ fn check_git_ssh_sign_program() {
     let output = std::process::Command::new("git")
         .args(["config", "--global", "gpg.ssh.program"])
         .output();
-    if let Ok(output) = output {
-        if output.status.success() {
-            let program = String::from_utf8_lossy(&output.stdout);
-            if program.contains("op-ssh-sign") {
-                warn!(
-                    "git gpg.ssh.program is set to op-ssh-sign, which bypasses authsock-warden's key cache. \
-                     To sign via authsock-warden and reduce TouchID prompts, run: \
-                     git config --global gpg.ssh.program ssh-keygen"
-                );
-            }
+    if let Ok(output) = output
+        && output.status.success()
+    {
+        let program = String::from_utf8_lossy(&output.stdout);
+        if program.contains("op-ssh-sign") {
+            warn!(
+                "git gpg.ssh.program is set to op-ssh-sign, which bypasses authsock-warden's key cache. \
+                 To sign via authsock-warden and reduce TouchID prompts, run: \
+                 git config --global gpg.ssh.program ssh-keygen"
+            );
         }
     }
 }

@@ -184,8 +184,8 @@ impl Proxy {
             "REQUEST_IDENTITIES response"
         );
 
-        if let Some(chain) = process_chain {
-            if let Ok(json) = serde_json::to_string(&serde_json::json!({
+        if let Some(chain) = process_chain
+            && let Ok(json) = serde_json::to_string(&serde_json::json!({
                 "event": "REQUEST_IDENTITIES",
                 "socket": &self.socket_path,
                 "original": original_count,
@@ -197,9 +197,9 @@ impl Proxy {
                     })
                 }).collect::<Vec<_>>(),
                 "process_chain": chain,
-            })) {
-                info!(target: "authsock_warden::audit", "{}", json);
-            }
+            }))
+        {
+            info!(target: "authsock_warden::audit", "{}", json);
         }
 
         // Update socket-level shared allowed keys cache
@@ -245,17 +245,17 @@ impl Proxy {
 
         if !is_allowed {
             info!(key = %key_desc, "SIGN_REQUEST denied by filter");
-            if let Some(chain) = process_chain {
-                if let Ok(json) = serde_json::to_string(&serde_json::json!({
+            if let Some(chain) = process_chain
+                && let Ok(json) = serde_json::to_string(&serde_json::json!({
                     "event": "SIGN_REQUEST",
                     "socket": &self.socket_path,
                     "key": &key_desc,
                     "result": "denied",
                     "backend": "agent",
                     "process_chain": chain,
-                })) {
-                    info!(target: "authsock_warden::audit", "{}", json);
-                }
+                }))
+            {
+                info!(target: "authsock_warden::audit", "{}", json);
             }
             return Ok(AgentMessage::failure());
         }
@@ -279,17 +279,17 @@ impl Proxy {
             }
         };
 
-        if let Some(chain) = process_chain {
-            if let Ok(json) = serde_json::to_string(&serde_json::json!({
+        if let Some(chain) = process_chain
+            && let Ok(json) = serde_json::to_string(&serde_json::json!({
                 "event": "SIGN_REQUEST",
                 "socket": &self.socket_path,
                 "key": &key_desc,
                 "result": result_str,
                 "backend": "agent",
                 "process_chain": chain,
-            })) {
-                info!(target: "authsock_warden::audit", "{}", json);
-            }
+            }))
+        {
+            info!(target: "authsock_warden::audit", "{}", json);
         }
 
         result
