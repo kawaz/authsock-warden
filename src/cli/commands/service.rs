@@ -32,10 +32,12 @@ fn yellow(text: &str, is_terminal: bool) -> String {
     color("33", text, is_terminal)
 }
 
+#[cfg(target_os = "macos")]
 fn bold(text: &str, is_terminal: bool) -> String {
     color("1", text, is_terminal)
 }
 
+#[cfg(target_os = "macos")]
 fn dim(text: &str, is_terminal: bool) -> String {
     color("2", text, is_terminal)
 }
