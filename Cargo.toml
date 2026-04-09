@@ -23,7 +23,8 @@ tokio = { version = "1", features = ["full", "signal", "process"] }
 ssh-key = { version = "0.6", features = ["std", "rand_core", "ed25519", "rsa"] }
 rsa = { version = "0.9", features = ["std"] }
 pkcs8 = { version = "0.10", features = ["pem", "std"] }
-sha2 = "0.10"
+sha1 = { version = "0.10", features = ["oid"] }
+sha2 = { version = "0.10", features = ["oid"] }
 signature = "2"
 base64 = "0.22"
 

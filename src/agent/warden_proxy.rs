@@ -53,8 +53,10 @@ pub(crate) struct OpManagedKey {
     item_id: String,
     /// Human-readable title (used as identity comment)
     title: String,
-    /// Cached private key (lazy loaded on first sign, zeroized on drop)
-    cached_private_key: Option<ssh_key::PrivateKey>,
+    /// Cached private key PEM (lazy loaded on first sign, zeroized on drop).
+    /// Stored as the original PEM string so the signer module remains a
+    /// stateless adapter that re-parses on every sign.
+    cached_pem: Option<zeroize::Zeroizing<String>>,
 }
 
 /// Which backend handles signing for a given key
@@ -462,23 +464,24 @@ impl WardProxy {
 
     /// Sign data locally using an op-managed key.
     ///
-    /// Uses cached private key if available, otherwise fetches from 1Password
-    /// and caches for subsequent signatures.
+    /// Uses the cached PEM if available, otherwise fetches from 1Password
+    /// and caches the PEM for subsequent signatures. The PEM is re-parsed
+    /// on every sign so the signer module stays stateless (a future KV /
+    /// cache-warden migration drops in cleanly).
     async fn sign_with_op(
         &self,
         key_blob: &Bytes,
         item_id: &str,
         sign_request_payload: &Bytes,
     ) -> Result<AgentMessage> {
-        // Check for cached private key
         {
             let state = self.op_state.read().await;
             if let OpState::Ready { keys } = &*state
                 && let Some(managed) = keys.get(key_blob)
-                && let Some(ref private_key) = managed.cached_private_key
+                && let Some(ref pem) = managed.cached_pem
             {
-                debug!(item_id = %item_id, "Signing with cached private key");
-                return signer::sign_with_key(private_key, sign_request_payload);
+                debug!(item_id = %item_id, "Signing with cached PEM");
+                return signer::sign_pem(pem, sign_request_payload);
             }
         }
 
@@ -490,17 +493,15 @@ impl WardProxy {
             .await
             .map_err(|e| Error::KeyStore(format!("spawn_blocking failed: {}", e)))??;
 
-        let private_key = signer::parse_private_key(&pem)?;
-        let result = signer::sign_with_key(&private_key, sign_request_payload);
+        let result = signer::sign_pem(&pem, sign_request_payload);
 
-        // Cache the private key for future use
         {
             let mut state = self.op_state.write().await;
             if let OpState::Ready { keys } = &mut *state
                 && let Some(managed) = keys.get_mut(key_blob)
             {
-                managed.cached_private_key = Some(private_key);
-                debug!(item_id = %item_id, "Cached private key for future signatures");
+                managed.cached_pem = Some(pem);
+                debug!(item_id = %item_id, "Cached PEM for future signatures");
             }
         }
 
@@ -636,7 +637,7 @@ impl WardProxy {
                         OpManagedKey {
                             item_id: item_id.clone(),
                             title: title.clone(),
-                            cached_private_key: None,
+                            cached_pem: None,
                         },
                     );
                     new_cache_keys.push(CachedKey {
@@ -672,7 +673,7 @@ impl WardProxy {
                         OpManagedKey {
                             item_id: item_id.clone(),
                             title: title.clone(),
-                            cached_private_key: None,
+                            cached_pem: None,
                         },
                     );
                     // Reconstruct public key string for cache
@@ -740,7 +741,7 @@ impl WardProxy {
                         OpManagedKey {
                             item_id: item_id.clone(),
                             title: title.clone(),
-                            cached_private_key: None,
+                            cached_pem: None,
                         },
                     );
 
@@ -847,7 +848,7 @@ impl WardProxy {
                                 OpManagedKey {
                                     item_id: cached.item_id.clone(),
                                     title: cached.title.clone(),
-                                    cached_private_key: None,
+                                    cached_pem: None,
                                 },
                             );
                             added += 1;
