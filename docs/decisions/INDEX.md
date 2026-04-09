@@ -18,6 +18,7 @@
 - [DR-015](DR-015-rsa-pkcs8-signing.md) — RSA PKCS#8 署名対応: rsa + pkcs8 クレートで 1Password の PKCS#8 RSA 鍵をパース、SHA2 署名アルゴリズム選択を実装
 - [DR-016](DR-016-cli-args-config-skip-and-fda-retry.md) — CLI 引数時のデフォルト Config スキップと FDA Check Retry
 - [DR-017](DR-017-process-chain-audit-logging.md) — Process Chain Audit Logging: ProcessInfo 拡張 (uid/gid/cwd/argv/start_time) と JSONL 形式の監査ログ
+- [DR-018](DR-018-kv-cache-warden.md) — KV キャッシュ機能（cache-warden 構想）: セキュア KV + プロセス認証 + TouchID + TTL による汎用キャッシュ
 
 ## Superseded
 
