@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.28] - 2026-05-06
+
+### Fixed
+
+- `op://` ソースの RSA 鍵で署名が常に失敗していた問題を修正。modern OpenSSH クライアントが要求する `rsa-sha2-512` を含む全てのハッシュフラグ (`ssh-rsa` / `rsa-sha2-256` / `rsa-sha2-512`) で署名できるようになった。古い OpenSSH サーバ（`HostKeyAlgorithms +ssh-rsa` 等）への接続が復旧。
+
+### Changed
+
+- 内部の signer モジュールをステートレスな PEM→署名アダプタに刷新。秘密鍵キャッシュは parsed `PrivateKey` ではなく PEM 文字列 (`Zeroizing<String>`) を保持する形に変更。将来の cache-warden 構想 (DR-018) に整合。
+
 ## [0.1.27] - 2026-04-09
 
 ### Security
