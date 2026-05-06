@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 内部の signer モジュールをステートレスな PEM→署名アダプタに刷新。秘密鍵キャッシュは parsed `PrivateKey` ではなく PEM 文字列 (`Zeroizing<String>`) を保持する形に変更。将来の cache-warden 構想 (DR-018) に整合。
 
+### Security
+
+- RSA 鍵を `from_components` で構築した直後に `precompute()` を呼ぶように修正。CRT パラメータ (dP, dQ, qInv) と Montgomery 事前計算が埋まり、署名が CRT 経路を通る (約2倍の高速化と blinding 経路の安定化)。
+- Ed25519 PKCS#8 の解析中に出る中間データ (base64 文字列・DER バイト列) を `Zeroizing` でラップし、関数終了時に確実にメモリ消去するよう変更。
+
 ## [0.1.27] - 2026-04-09
 
 ### Security

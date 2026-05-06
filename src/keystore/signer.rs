@@ -224,15 +224,27 @@ fn rsa_keypair_to_rsa_private_key(kp: &ssh_key::private::RsaKeypair) -> Result<r
     let d = to_bigint(&kp.private.d, "d")?;
     let p = to_bigint(&kp.private.p, "p")?;
     let q = to_bigint(&kp.private.q, "q")?;
-    rsa::RsaPrivateKey::from_components(n, e, d, vec![p, q])
-        .map_err(|err| Error::KeyStore(format!("RSA component reconstruction failed: {}", err)))
+    let mut key = rsa::RsaPrivateKey::from_components(n, e, d, vec![p, q])
+        .map_err(|err| Error::KeyStore(format!("RSA component reconstruction failed: {}", err)))?;
+    // from_components leaves CRT parameters (dP, dQ, qInv) and Montgomery
+    // precomputation empty. Without precompute() the signing path falls back
+    // to a single full-modulus exponentiation per signature (~2x slower) and
+    // the blinding shape diverges from a precomputed key. Always populate.
+    key.precompute()
+        .map_err(|err| Error::KeyStore(format!("RSA precompute failed: {}", err)))?;
+    Ok(key)
 }
 
 fn parse_pkcs8_rsa(pem: &str) -> Result<KeyMaterial> {
     use pkcs8::DecodePrivateKey;
 
-    let key = rsa::RsaPrivateKey::from_pkcs8_pem(pem)
+    let mut key = rsa::RsaPrivateKey::from_pkcs8_pem(pem)
         .map_err(|e| Error::KeyStore(format!("Failed to parse PKCS#8 RSA key: {}", e)))?;
+    // PKCS#8 RSA carries dP/dQ/qInv on disk, but `from_pkcs8_pem` does not
+    // populate the in-memory Montgomery precomputation. Trigger it so the
+    // signing path matches the OpenSSH-format branch.
+    key.precompute()
+        .map_err(|e| Error::KeyStore(format!("RSA precompute failed: {}", e)))?;
     Ok(KeyMaterial::Rsa(Box::new(key)))
 }
 
@@ -244,15 +256,21 @@ fn parse_pkcs8_rsa(pem: &str) -> Result<KeyMaterial> {
 /// The Ed25519 PKCS#8 structure is simple and fixed, so this targeted
 /// parsing is safe for this specific case.
 fn parse_pkcs8_ed25519(pem: &str) -> Result<KeyMaterial> {
-    let b64: String = pem
-        .lines()
-        .filter(|line| !line.starts_with("-----"))
-        .collect();
+    // The base64 string and decoded DER both contain the full private key
+    // (32-byte seed). Wrap in Zeroizing so they erase on drop instead of
+    // lingering on the heap until reuse.
+    let b64: Zeroizing<String> = Zeroizing::new(
+        pem.lines()
+            .filter(|line| !line.starts_with("-----"))
+            .collect(),
+    );
 
     use base64::Engine;
-    let der = base64::engine::general_purpose::STANDARD
-        .decode(&b64)
-        .map_err(|e| Error::KeyStore(format!("Failed to base64 decode PKCS#8 key: {}", e)))?;
+    let der: Zeroizing<Vec<u8>> = Zeroizing::new(
+        base64::engine::general_purpose::STANDARD
+            .decode(b64.as_bytes())
+            .map_err(|e| Error::KeyStore(format!("Failed to base64 decode PKCS#8 key: {}", e)))?,
+    );
 
     let seed = extract_ed25519_seed_from_pkcs8(&der)?;
     let kp = Ed25519Keypair::from_seed(&seed);
@@ -423,6 +441,50 @@ IGmiN6jIaYLa8S4Be472ERHj
     fn from_pem_parses_pkcs8_rsa() {
         let material = KeyMaterial::from_pem(RSA_PRIVATE_KEY_PEM).unwrap();
         assert!(matches!(material, KeyMaterial::Rsa(_)));
+    }
+
+    #[test]
+    fn rsa_key_has_crt_precomputation() {
+        // from_components leaves CRT parameters empty; without precompute()
+        // RSA signing falls back to a slow non-CRT exponentiation path.
+        // Verify both PKCS#8 and OpenSSH RSA paths populate them.
+        use rsa::traits::PrivateKeyParts;
+        let material = KeyMaterial::from_pem(RSA_PRIVATE_KEY_PEM).unwrap();
+        let key = match &material {
+            KeyMaterial::Rsa(k) => k,
+            _ => panic!("expected RSA"),
+        };
+        assert!(key.dp().is_some(), "dp should be precomputed");
+        assert!(key.dq().is_some(), "dq should be precomputed");
+        assert!(key.qinv().is_some(), "qinv should be precomputed");
+    }
+
+    #[test]
+    fn rsa_openssh_path_has_crt_precomputation() {
+        use pkcs8::DecodePrivateKey;
+        use rsa::traits::PrivateKeyParts;
+        let rsa_key = rsa::RsaPrivateKey::from_pkcs8_pem(RSA_PRIVATE_KEY_PEM).unwrap();
+        let kp = ssh_key::private::RsaKeypair::try_from(rsa_key).unwrap();
+        let pk = ssh_key::PrivateKey::from(kp);
+        let openssh_pem = pk.to_openssh(ssh_key::LineEnding::LF).unwrap().to_string();
+
+        let material = KeyMaterial::from_pem(&openssh_pem).unwrap();
+        let key = match &material {
+            KeyMaterial::Rsa(k) => k,
+            _ => panic!("expected RSA"),
+        };
+        assert!(
+            key.dp().is_some(),
+            "dp should be precomputed via OpenSSH path"
+        );
+        assert!(
+            key.dq().is_some(),
+            "dq should be precomputed via OpenSSH path"
+        );
+        assert!(
+            key.qinv().is_some(),
+            "qinv should be precomputed via OpenSSH path"
+        );
     }
 
     #[test]
