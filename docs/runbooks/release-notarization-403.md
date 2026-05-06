@@ -52,6 +52,9 @@ gh run rerun "$run_id" --failed --repo kawaz/authsock-warden
 ```
 
 5. CI 完走後、`brew upgrade --cask kawaz/tap/authsock-warden` → `authsock-warden service reload`
+   - `service reload` は launchctl unload + load を打つだけで、plist は書き換えない
+   - 通常運用なら plist の executable は `/opt/homebrew/bin/authsock-warden` (Cask が張る symlink) を指しているはずで、`brew upgrade` で symlink 先の実体が入れ替わる → reload するだけで新バイナリのプロセスに置き換わる
+   - もし `service status` で表示される executable が `/opt/homebrew/bin/authsock-warden` 以外（例: 過去にローカルビルドで `service register` した名残）を指していたら、reload しても古いバイナリが起動し続ける。その場合は明示的に `authsock-warden service register` を呼んで plist を作り直す
 
 ## 補足
 
