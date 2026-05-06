@@ -1,6 +1,6 @@
 [package]
 name = "authsock-warden"
-version = "0.1.28"
+version = "0.1.29"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Yoshiaki Kawazu <kawazzz@gmail.com>"]
@@ -21,6 +21,7 @@ tokio = { version = "1", features = ["full", "signal", "process"] }
 
 # SSH key handling
 ssh-key = { version = "0.6", features = ["std", "rand_core", "ed25519", "rsa"] }
+ed25519-dalek = { version = "2", features = ["pkcs8"] }
 rsa = { version = "0.9", features = ["std"] }
 pkcs8 = { version = "0.10", features = ["pem", "std"] }
 sha1 = { version = "0.10", features = ["oid"] }

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.29] - 2026-05-07
+
+v0.1.28 のレビュー指摘を全て反映した hardening リリース。利用者向けの挙動変更はない。
+
+### Security
+
+- Ed25519 鍵を `ed25519_dalek::SigningKey` で直接署名するよう変更し、`ssh_key::PrivateKey` 経由のラウンドトリップを排除。署名経路から ssh-key crate の中間表現が消えたことで、変換段階に潜在するバグの影響面を縮小。
+- PKCS#8 解析を `pkcs8` crate の strict parser を主軸に再構成。AlgorithmIdentifier の OID で分岐するため、別アルゴリズムを Ed25519 と誤認して silent verify-failure に化けるリスクを排除。1Password の non-canonical DER 用の OID 線形検索 fallback は strict parse が失敗したときのみ実行する形に隔離。
+- PEM ヘッダ検出を行単位の正規一致に厳密化（`-----BEGIN ENCRYPTED PRIVATE KEY-----` は明示的に拒否）。
+- エラーメッセージから下位 crate の `Display` 文字列を排除し、固定文言 + `tracing::debug!` に分離。将来の crate アップデートで秘密素材が tracing/audit ログに混入する経路を塞いだ。
+- Legacy `ssh-rsa` (SHA-1) 署名を生成する際、プロセスごとに 1 回 audit ログ (`warn!`) で告知するように変更。気づかず deprecated アルゴリズムを使い続ける運用を防ぐ。
+
+### Changed
+
+- SSH agent SignRequest/SignResponse のフレーミング解析を `protocol::AgentMessage::parse_sign_request` / `AgentMessage::sign_response` に集約。`signer` モジュールは `sign(pem, data, flags) -> Result<Vec<u8>>` の純粋なクリプトアダプタに簡素化。
+- `OpManagedKey::cached_pem` を `Arc<tokio::sync::Mutex<Option<Zeroizing<String>>>>` に変更。同一 key への並行 sign で TouchID プロンプトが二重発火しないよう per-key にシリアル化。
+
+### Internal
+
+- 依存追加: `ed25519-dalek` (direct, `pkcs8` feature)。`ssh-key` の transitive 依存を direct 依存に格上げ。
+- DR-018 (cache-warden 構想) に「現状とのギャップ」セクションを追加し、TTL なし PEM キャッシュという実装現状と最終形の差分を明記。
+
 ## [0.1.28] - 2026-05-06
 
 ### Fixed
