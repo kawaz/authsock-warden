@@ -53,10 +53,12 @@ pub(crate) struct OpManagedKey {
     item_id: String,
     /// Human-readable title (used as identity comment)
     title: String,
-    /// Cached private key PEM (lazy loaded on first sign, zeroized on drop).
-    /// Stored as the original PEM string so the signer module remains a
-    /// stateless adapter that re-parses on every sign.
-    cached_pem: Option<zeroize::Zeroizing<String>>,
+    /// Cached private key PEM, serialized per-key so that concurrent
+    /// signs on a cold cache prompt TouchID at most once. Lazy-loaded on
+    /// first sign, zeroized on drop. Stored as the original PEM string
+    /// so the signer module remains a stateless adapter that re-parses
+    /// on every sign.
+    cached_pem: Arc<tokio::sync::Mutex<Option<zeroize::Zeroizing<String>>>>,
 }
 
 /// Which backend handles signing for a given key
@@ -365,13 +367,14 @@ impl WardProxy {
         request: AgentMessage,
         process_chain: Option<&ProcessChain>,
     ) -> Result<AgentMessage> {
-        let key_blob = match request.parse_sign_request_key() {
-            Ok(blob) => blob,
+        let fields = match request.parse_sign_request() {
+            Ok(fields) => fields,
             Err(e) => {
                 warn!(error = %e, "Failed to parse sign request");
                 return Ok(AgentMessage::failure());
             }
         };
+        let key_blob = fields.key_blob.clone();
 
         let identity = Identity::new(key_blob.clone(), String::new());
         let key_desc = describe_key(&identity);
@@ -414,7 +417,7 @@ impl WardProxy {
             Some(SigningBackend::Op { item_id }) => {
                 info!(key = %key_desc, backend = "op", "Signing with 1Password");
                 (
-                    self.sign_with_op(&key_blob, &item_id, &request.payload)
+                    self.sign_with_op(&key_blob, &item_id, &fields.data, fields.flags)
                         .await,
                     "op",
                 )
@@ -464,28 +467,43 @@ impl WardProxy {
 
     /// Sign data locally using an op-managed key.
     ///
-    /// Uses the cached PEM if available, otherwise fetches from 1Password
-    /// and caches the PEM for subsequent signatures. The PEM is re-parsed
-    /// on every sign so the signer module stays stateless (a future KV /
-    /// cache-warden migration drops in cleanly).
+    /// Concurrency: the per-key `cached_pem` Mutex serializes both the
+    /// fetch-from-1Password path (TouchID) and the cached-sign path for
+    /// the *same* key, so two simultaneous signs on a cold cache yield
+    /// exactly one TouchID prompt. Different keys remain fully parallel.
+    ///
+    /// The PEM is re-parsed on every sign so the signer module stays
+    /// stateless (a future KV / cache-warden migration drops in cleanly).
     async fn sign_with_op(
         &self,
         key_blob: &Bytes,
         item_id: &str,
-        sign_request_payload: &Bytes,
+        data: &[u8],
+        flags: u32,
     ) -> Result<AgentMessage> {
-        {
+        // Pull out the per-key cache cell without holding the global op_state
+        // lock during the (potentially long) TouchID prompt.
+        let cell = {
             let state = self.op_state.read().await;
-            if let OpState::Ready { keys } = &*state
-                && let Some(managed) = keys.get(key_blob)
-                && let Some(ref pem) = managed.cached_pem
-            {
-                debug!(item_id = %item_id, "Signing with cached PEM");
-                return signer::sign_pem(pem, sign_request_payload);
+            match &*state {
+                OpState::Ready { keys } => keys.get(key_blob).map(|m| m.cached_pem.clone()),
+                _ => None,
             }
+        };
+        let Some(cell) = cell else {
+            return Err(Error::KeyStore(
+                "Op-managed key disappeared between routing and signing".to_string(),
+            ));
+        };
+
+        let mut guard = cell.lock().await;
+        if let Some(pem) = guard.as_deref() {
+            debug!(item_id = %item_id, "Signing with cached PEM");
+            let blob = signer::sign(pem, data, flags)?;
+            return Ok(AgentMessage::sign_response(&blob));
         }
 
-        // Fetch private key via op CLI (may trigger TouchID)
+        // Cold cache: fetch from 1Password (may trigger TouchID).
         let item_id_owned = item_id.to_string();
         debug!(item_id = %item_id, "Signing with op-managed key (fetching private key)");
 
@@ -493,19 +511,10 @@ impl WardProxy {
             .await
             .map_err(|e| Error::KeyStore(format!("spawn_blocking failed: {}", e)))??;
 
-        let result = signer::sign_pem(&pem, sign_request_payload);
-
-        {
-            let mut state = self.op_state.write().await;
-            if let OpState::Ready { keys } = &mut *state
-                && let Some(managed) = keys.get_mut(key_blob)
-            {
-                managed.cached_pem = Some(pem);
-                debug!(item_id = %item_id, "Cached PEM for future signatures");
-            }
-        }
-
-        result
+        let blob = signer::sign(&pem, data, flags)?;
+        *guard = Some(pem);
+        debug!(item_id = %item_id, "Cached PEM for future signatures");
+        Ok(AgentMessage::sign_response(&blob))
     }
 
     // ---- Op lazy initialization ----
@@ -637,7 +646,7 @@ impl WardProxy {
                         OpManagedKey {
                             item_id: item_id.clone(),
                             title: title.clone(),
-                            cached_pem: None,
+                            cached_pem: Arc::new(tokio::sync::Mutex::new(None)),
                         },
                     );
                     new_cache_keys.push(CachedKey {
@@ -673,7 +682,7 @@ impl WardProxy {
                         OpManagedKey {
                             item_id: item_id.clone(),
                             title: title.clone(),
-                            cached_pem: None,
+                            cached_pem: Arc::new(tokio::sync::Mutex::new(None)),
                         },
                     );
                     // Reconstruct public key string for cache
@@ -741,7 +750,7 @@ impl WardProxy {
                         OpManagedKey {
                             item_id: item_id.clone(),
                             title: title.clone(),
-                            cached_pem: None,
+                            cached_pem: Arc::new(tokio::sync::Mutex::new(None)),
                         },
                     );
 
@@ -848,7 +857,7 @@ impl WardProxy {
                                 OpManagedKey {
                                     item_id: cached.item_id.clone(),
                                     title: cached.title.clone(),
-                                    cached_pem: None,
+                                    cached_pem: Arc::new(tokio::sync::Mutex::new(None)),
                                 },
                             );
                             added += 1;

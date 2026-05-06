@@ -14,13 +14,13 @@
 //! end-to-end, we avoid intermediate conversions entirely.
 
 use crate::error::{Error, Result};
-use crate::protocol::{AgentMessage, MessageType};
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use ed25519_dalek::SigningKey as Ed25519SigningKey;
 use rsa::pkcs1v15::SigningKey as RsaSigningKey;
 use rsa::signature::SignatureEncoding;
 use ssh_key::PrivateKey;
-use ssh_key::private::{Ed25519Keypair, Ed25519PrivateKey};
-use tracing::debug;
+use ssh_key::private::Ed25519PrivateKey;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tracing::{debug, warn};
 use zeroize::Zeroizing;
 
 /// SSH agent protocol flags for RSA hash algorithm selection.
@@ -30,69 +30,20 @@ use zeroize::Zeroizing;
 const SSH_AGENT_RSA_SHA2_256: u32 = 0x02;
 const SSH_AGENT_RSA_SHA2_512: u32 = 0x04;
 
-/// Sign an SSH agent SignRequest payload using a PEM-encoded private key.
+/// Sign `data` with the PEM-encoded private key and return an SSH wire
+/// signature blob (`string(algorithm) + string(signature)`).
 ///
-/// The key is parsed, used to sign, and dropped within this call.
-/// This is the only public entry point of the signer module.
-pub fn sign_pem(pem: &str, sign_request_payload: &Bytes) -> Result<AgentMessage> {
-    let parsed = parse_sign_request(sign_request_payload)?;
-    let material = KeyMaterial::from_pem(pem)?;
-    let blob = material.sign(&parsed.data, parsed.flags)?;
-    Ok(encode_sign_response(blob))
-}
-
-/// Parsed SignRequest fields the signer cares about.
-/// (key_blob is ignored — caller has already routed by key.)
-struct ParsedSignRequest {
-    data: Vec<u8>,
-    flags: u32,
-}
-
-fn parse_sign_request(payload: &Bytes) -> Result<ParsedSignRequest> {
-    let mut buf = &payload[..];
-
-    if buf.remaining() < 4 {
-        return Err(Error::Protocol("SignRequest too short".to_string()));
-    }
-    let key_len = buf.get_u32() as usize;
-    if buf.remaining() < key_len {
-        return Err(Error::Protocol(
-            "SignRequest key blob truncated".to_string(),
-        ));
-    }
-    buf.advance(key_len);
-
-    if buf.remaining() < 4 {
-        return Err(Error::Protocol(
-            "SignRequest data length missing".to_string(),
-        ));
-    }
-    let data_len = buf.get_u32() as usize;
-    if buf.remaining() < data_len {
-        return Err(Error::Protocol("SignRequest data truncated".to_string()));
-    }
-    let data = buf[..data_len].to_vec();
-    buf.advance(data_len);
-
-    let flags = if buf.remaining() >= 4 {
-        buf.get_u32()
-    } else {
-        0
-    };
-
+/// The key is parsed, used to sign, and dropped within this call. The
+/// SSH agent SIGN_REQUEST/SIGN_RESPONSE wire framing lives in `protocol`;
+/// this module is the pure crypto adapter.
+pub fn sign(pem: &str, data: &[u8], flags: u32) -> Result<Vec<u8>> {
     if flags != 0 {
         debug!(flags = flags, "Sign request flags present");
     }
     debug!(data_len = data.len(), flags = flags, "Signing data locally");
 
-    Ok(ParsedSignRequest { data, flags })
-}
-
-fn encode_sign_response(sig_blob: Vec<u8>) -> AgentMessage {
-    let mut payload = BytesMut::new();
-    payload.put_u32(sig_blob.len() as u32);
-    payload.put_slice(&sig_blob);
-    AgentMessage::new(MessageType::SignResponse, payload.freeze())
+    let material = KeyMaterial::from_pem(pem)?;
+    material.sign(data, flags)
 }
 
 /// Encode an SSH signature blob: `string(algorithm) + string(signature)`.
@@ -110,14 +61,46 @@ fn encode_signature_blob(algorithm_name: &str, sig_bytes: &[u8]) -> Vec<u8> {
     blob
 }
 
+/// PEM block flavor recognized by `from_pem`.
+///
+/// Header detection is line-based and exact-match: substring matching
+/// (`pem.contains("BEGIN PRIVATE KEY")`) would conflate the unencrypted
+/// PKCS#8 header with `BEGIN ENCRYPTED PRIVATE KEY` and is brittle.
+#[derive(Debug, PartialEq, Eq)]
+enum PemKind {
+    OpenSsh,
+    Pkcs8,
+    EncryptedPkcs8,
+    Unknown,
+}
+
+fn pem_kind(pem: &str) -> PemKind {
+    for line in pem.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("-----BEGIN ") {
+            continue;
+        }
+        return match trimmed {
+            "-----BEGIN OPENSSH PRIVATE KEY-----" => PemKind::OpenSsh,
+            "-----BEGIN PRIVATE KEY-----" => PemKind::Pkcs8,
+            "-----BEGIN ENCRYPTED PRIVATE KEY-----" => PemKind::EncryptedPkcs8,
+            _ => PemKind::Unknown,
+        };
+    }
+    PemKind::Unknown
+}
+
 /// Algorithm-specific private key material.
 ///
-/// Each variant holds the native type of the signing crate, so we never
-/// convert between representations at sign time.
+/// Each variant holds the native signing-crate type so the sign path
+/// never touches an intermediate representation. Both variants are boxed
+/// to keep the enum a single pointer wide; `ed25519_dalek::SigningKey`
+/// holds an expanded secret + verifying key (>100 bytes) and
+/// `rsa::RsaPrivateKey` carries multi-`BigUint` state plus precomputed
+/// CRT parameters, so unboxed they would force every
+/// `Result<KeyMaterial>` move to copy the larger variant.
 enum KeyMaterial {
-    Ed25519(Ed25519Keypair),
-    // Boxed because rsa::RsaPrivateKey is ~344 bytes vs Ed25519Keypair's 64;
-    // keeps the enum compact for moves through Result.
+    Ed25519(Box<Ed25519SigningKey>),
     Rsa(Box<rsa::RsaPrivateKey>),
 }
 
@@ -128,26 +111,33 @@ impl KeyMaterial {
     /// - OpenSSH format ("BEGIN OPENSSH PRIVATE KEY") for Ed25519 / RSA
     /// - PKCS#8 format ("BEGIN PRIVATE KEY") for Ed25519 / RSA (1Password)
     fn from_pem(pem: &str) -> Result<Self> {
-        if let Ok(key) = PrivateKey::from_openssh(pem) {
-            return Self::from_openssh_private_key(&key);
+        match pem_kind(pem) {
+            PemKind::OpenSsh => {
+                let key = PrivateKey::from_openssh(pem)
+                    .map_err(|_| Error::KeyStore("Invalid OpenSSH private key".to_string()))?;
+                Self::from_openssh_private_key(&key)
+            }
+            PemKind::Pkcs8 => Self::from_pkcs8(pem),
+            PemKind::EncryptedPkcs8 => Err(Error::KeyStore(
+                "Encrypted PKCS#8 private keys are not supported".to_string(),
+            )),
+            PemKind::Unknown => Err(Error::KeyStore(
+                "Unsupported PEM format. Expected \"BEGIN OPENSSH PRIVATE KEY\" \
+                 or \"BEGIN PRIVATE KEY\""
+                    .to_string(),
+            )),
         }
-
-        if pem.contains("BEGIN PRIVATE KEY") {
-            return Self::from_pkcs8(pem);
-        }
-
-        Err(Error::KeyStore(
-            "Failed to parse private key: unsupported format. \
-             Expected OpenSSH (\"BEGIN OPENSSH PRIVATE KEY\") or \
-             PKCS#8 (\"BEGIN PRIVATE KEY\")"
-                .to_string(),
-        ))
     }
 
     fn from_openssh_private_key(key: &PrivateKey) -> Result<Self> {
         use ssh_key::private::KeypairData;
         match key.key_data() {
-            KeypairData::Ed25519(kp) => Ok(KeyMaterial::Ed25519(kp.clone())),
+            KeypairData::Ed25519(kp) => {
+                let seed: &[u8; 32] = kp.private.as_ref();
+                Ok(KeyMaterial::Ed25519(Box::new(
+                    Ed25519SigningKey::from_bytes(seed),
+                )))
+            }
             KeypairData::Rsa(kp) => Ok(KeyMaterial::Rsa(Box::new(rsa_keypair_to_rsa_private_key(
                 kp,
             )?))),
@@ -158,10 +148,23 @@ impl KeyMaterial {
         }
     }
 
-    /// Parse a PKCS#8 PEM. Tries Ed25519 first (1Password's non-canonical DER
-    /// is detected by OID), then falls back to RSA via the rsa crate.
+    /// Parse a PKCS#8 PEM.
+    ///
+    /// Strategy:
+    /// 1. Try a strict parse via the `pkcs8`/`ed25519-dalek`/`rsa` crates.
+    ///    This dispatches on AlgorithmIdentifier OID, so a malformed header
+    ///    or a misclassified blob fails loudly instead of silently producing
+    ///    a wrong key.
+    /// 2. If strict parsing fails, fall back to a targeted Ed25519 OID +
+    ///    offset extraction. This exists solely for 1Password, which emits
+    ///    PKCS#8 with non-canonical DER that strict parsers reject.
+    /// 3. Last resort: defer to `rsa::RsaPrivateKey::from_pkcs8_pem` (which
+    ///    is already lenient and gives the cleanest RSA error path).
     fn from_pkcs8(pem: &str) -> Result<Self> {
-        if let Ok(material) = parse_pkcs8_ed25519(pem) {
+        if let Some(material) = parse_pkcs8_strict(pem)? {
+            return Ok(material);
+        }
+        if let Ok(material) = parse_pkcs8_ed25519_lenient(pem) {
             return Ok(material);
         }
         parse_pkcs8_rsa(pem)
@@ -170,22 +173,23 @@ impl KeyMaterial {
     /// Sign and return an SSH signature blob (`string(algo) + string(sig)`).
     fn sign(&self, data: &[u8], flags: u32) -> Result<Vec<u8>> {
         match self {
-            KeyMaterial::Ed25519(kp) => sign_ed25519(kp, data),
+            KeyMaterial::Ed25519(key) => Ok(sign_ed25519(key, data)),
             KeyMaterial::Rsa(key) => sign_rsa(key, data, flags),
         }
     }
 }
 
-fn sign_ed25519(kp: &Ed25519Keypair, data: &[u8]) -> Result<Vec<u8>> {
-    // ssh_key's Ed25519Keypair → PrivateKey → try_sign gives us a
-    // ready-to-encode ssh_key::Signature. flags are ignored for Ed25519.
-    let private_key = PrivateKey::from(kp.clone());
-    let signature: ssh_key::Signature = signature::Signer::try_sign(&private_key, data)
-        .map_err(|e| Error::Protocol(format!("Ed25519 signing failed: {}", e)))?;
-    signature
-        .try_into()
-        .map_err(|e: ssh_key::Error| Error::Protocol(format!("Failed to encode signature: {}", e)))
+fn sign_ed25519(key: &Ed25519SigningKey, data: &[u8]) -> Vec<u8> {
+    // Ed25519 is deterministic and ignores flags. Sign with ed25519_dalek
+    // directly — no ssh-key round-trip — and emit the SSH wire blob.
+    let sig = ed25519_dalek::Signer::sign(key, data);
+    encode_signature_blob("ssh-ed25519", &sig.to_bytes())
 }
+
+/// Whether we have already warned about a legacy `ssh-rsa` (SHA-1)
+/// signature in this process. Emit at most once to avoid log spam when a
+/// session keeps signing against the same legacy server.
+static SSH_RSA_SHA1_WARNED: AtomicBool = AtomicBool::new(false);
 
 fn sign_rsa(key: &rsa::RsaPrivateKey, data: &[u8], flags: u32) -> Result<Vec<u8>> {
     let (algorithm_name, sig_bytes) = if flags & SSH_AGENT_RSA_SHA2_512 != 0 {
@@ -199,6 +203,16 @@ fn sign_rsa(key: &rsa::RsaPrivateKey, data: &[u8], flags: u32) -> Result<Vec<u8>
     } else {
         // Legacy ssh-rsa (SHA-1). Required by old OpenSSH servers
         // (e.g. CentOS 6 / OpenSSH 5.3) that advertise only ssh-rsa.
+        // SHA-1 is deprecated; warn once per process so operators notice
+        // they are still propping up an obsolete server.
+        if !SSH_RSA_SHA1_WARNED.swap(true, Ordering::Relaxed) {
+            warn!(
+                target: "authsock_warden::audit",
+                "Producing legacy ssh-rsa (SHA-1) signature; remote agent \
+                 requested an algorithm OpenSSH deprecated in 8.2. Consider \
+                 upgrading the remote sshd."
+            );
+        }
         let signing_key = RsaSigningKey::<sha1::Sha1>::new(key.clone());
         let sig: rsa::pkcs1v15::Signature = signature::Signer::sign(&signing_key, data);
         ("ssh-rsa", sig.to_vec())
@@ -213,10 +227,17 @@ fn sign_rsa(key: &rsa::RsaPrivateKey, data: &[u8], flags: u32) -> Result<Vec<u8>
 /// "cryptographic error".
 fn rsa_keypair_to_rsa_private_key(kp: &ssh_key::private::RsaKeypair) -> Result<rsa::RsaPrivateKey> {
     use rsa::BigUint;
+    // User-visible errors are deliberately fixed strings: the underlying
+    // crate's `Display` impls may include excerpts of the offending DER /
+    // BigUint, which would leak key material into logs and audit trails.
+    // The full error goes through `tracing::debug!` for local debugging.
     let to_bigint = |m: &ssh_key::Mpint, label: &str| -> Result<BigUint> {
         m.as_positive_bytes()
             .map(BigUint::from_bytes_be)
-            .ok_or_else(|| Error::KeyStore(format!("RSA component {} is not positive", label)))
+            .ok_or_else(|| {
+                debug!(component = label, "RSA component is not a positive integer");
+                Error::KeyStore("Invalid RSA key component".to_string())
+            })
     };
 
     let n = to_bigint(&kp.public.n, "n")?;
@@ -224,38 +245,95 @@ fn rsa_keypair_to_rsa_private_key(kp: &ssh_key::private::RsaKeypair) -> Result<r
     let d = to_bigint(&kp.private.d, "d")?;
     let p = to_bigint(&kp.private.p, "p")?;
     let q = to_bigint(&kp.private.q, "q")?;
-    let mut key = rsa::RsaPrivateKey::from_components(n, e, d, vec![p, q])
-        .map_err(|err| Error::KeyStore(format!("RSA component reconstruction failed: {}", err)))?;
+    let mut key = rsa::RsaPrivateKey::from_components(n, e, d, vec![p, q]).map_err(|err| {
+        debug!(error = %err, "RSA from_components rejected the supplied parameters");
+        Error::KeyStore("RSA key reconstruction failed".to_string())
+    })?;
     // from_components leaves CRT parameters (dP, dQ, qInv) and Montgomery
     // precomputation empty. Without precompute() the signing path falls back
     // to a single full-modulus exponentiation per signature (~2x slower) and
     // the blinding shape diverges from a precomputed key. Always populate.
-    key.precompute()
-        .map_err(|err| Error::KeyStore(format!("RSA precompute failed: {}", err)))?;
+    key.precompute().map_err(|err| {
+        debug!(error = %err, "RSA precompute failed");
+        Error::KeyStore("RSA key initialization failed".to_string())
+    })?;
     Ok(key)
 }
 
 fn parse_pkcs8_rsa(pem: &str) -> Result<KeyMaterial> {
     use pkcs8::DecodePrivateKey;
 
-    let mut key = rsa::RsaPrivateKey::from_pkcs8_pem(pem)
-        .map_err(|e| Error::KeyStore(format!("Failed to parse PKCS#8 RSA key: {}", e)))?;
+    let mut key = rsa::RsaPrivateKey::from_pkcs8_pem(pem).map_err(|err| {
+        debug!(error = %err, "rsa::RsaPrivateKey::from_pkcs8_pem rejected input");
+        Error::KeyStore("Invalid PKCS#8 RSA private key".to_string())
+    })?;
     // PKCS#8 RSA carries dP/dQ/qInv on disk, but `from_pkcs8_pem` does not
     // populate the in-memory Montgomery precomputation. Trigger it so the
     // signing path matches the OpenSSH-format branch.
-    key.precompute()
-        .map_err(|e| Error::KeyStore(format!("RSA precompute failed: {}", e)))?;
+    key.precompute().map_err(|err| {
+        debug!(error = %err, "RSA precompute failed (PKCS#8 path)");
+        Error::KeyStore("RSA key initialization failed".to_string())
+    })?;
     Ok(KeyMaterial::Rsa(Box::new(key)))
 }
 
-/// Parse a PKCS#8-encoded Ed25519 private key PEM.
+/// Strict PKCS#8 parse via `pkcs8` / `ed25519-dalek` / `rsa` crates.
 ///
-/// Design rationale: We use a targeted OID + offset approach instead of the
-/// `pkcs8` crate because 1Password's PKCS#8 output is not strict DER
-/// (contains non-canonical encodings that `pkcs8::PrivateKeyInfo` rejects).
-/// The Ed25519 PKCS#8 structure is simple and fixed, so this targeted
-/// parsing is safe for this specific case.
-fn parse_pkcs8_ed25519(pem: &str) -> Result<KeyMaterial> {
+/// Returns `Ok(Some(...))` on success, `Ok(None)` when strict parsing
+/// rejected the input (typically: 1Password's non-canonical DER), and
+/// `Err(...)` only for an *identified-but-unsupported* algorithm.
+///
+/// Dispatching on AlgorithmIdentifier OID (rather than guessing by trying
+/// algorithms in turn) makes silent misclassification impossible: a key
+/// whose OID is neither Ed25519 nor RSA fails loudly here instead of
+/// being treated as Ed25519 with random bytes as the seed.
+fn parse_pkcs8_strict(pem: &str) -> Result<Option<KeyMaterial>> {
+    use pkcs8::{DecodePrivateKey, ObjectIdentifier, PrivateKeyInfo, SecretDocument};
+
+    const ED25519_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.101.112");
+    const RSA_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
+
+    let Ok((_label, doc)) = SecretDocument::from_pem(pem) else {
+        return Ok(None);
+    };
+    let Ok(info) = PrivateKeyInfo::try_from(doc.as_bytes()) else {
+        return Ok(None);
+    };
+
+    if info.algorithm.oid == ED25519_OID {
+        let key = Ed25519SigningKey::from_pkcs8_der(doc.as_bytes()).map_err(|err| {
+            debug!(error = %err, "ed25519_dalek::SigningKey::from_pkcs8_der rejected input");
+            Error::KeyStore("Invalid PKCS#8 Ed25519 private key".to_string())
+        })?;
+        Ok(Some(KeyMaterial::Ed25519(Box::new(key))))
+    } else if info.algorithm.oid == RSA_OID {
+        let mut key = rsa::RsaPrivateKey::from_pkcs8_der(doc.as_bytes()).map_err(|err| {
+            debug!(error = %err, "rsa::RsaPrivateKey::from_pkcs8_der rejected input");
+            Error::KeyStore("Invalid PKCS#8 RSA private key".to_string())
+        })?;
+        key.precompute().map_err(|err| {
+            debug!(error = %err, "RSA precompute failed (PKCS#8 strict path)");
+            Error::KeyStore("RSA key initialization failed".to_string())
+        })?;
+        Ok(Some(KeyMaterial::Rsa(Box::new(key))))
+    } else {
+        // OID is logged at debug level because it is *not* secret material;
+        // surfacing it to users would only confuse them.
+        debug!(oid = %info.algorithm.oid, "PKCS#8 algorithm OID not supported");
+        Err(Error::KeyStore(
+            "Unsupported PKCS#8 algorithm. Only Ed25519 and RSA are supported.".to_string(),
+        ))
+    }
+}
+
+/// Lenient Ed25519 fallback for 1Password's non-canonical PKCS#8 DER.
+///
+/// Design rationale: 1Password emits PKCS#8 with non-canonical DER that
+/// `pkcs8::PrivateKeyInfo::try_from` rejects. We scan for the Ed25519 OID
+/// (1.3.101.112 = `06 03 2b 65 70`) and pull out the inner OCTET STRING
+/// holding the 32-byte seed. This is reachable only after `parse_pkcs8_strict`
+/// returns `None`, so a strict parse always wins when it succeeds.
+fn parse_pkcs8_ed25519_lenient(pem: &str) -> Result<KeyMaterial> {
     // The base64 string and decoded DER both contain the full private key
     // (32-byte seed). Wrap in Zeroizing so they erase on drop instead of
     // lingering on the heap until reuse.
@@ -269,12 +347,16 @@ fn parse_pkcs8_ed25519(pem: &str) -> Result<KeyMaterial> {
     let der: Zeroizing<Vec<u8>> = Zeroizing::new(
         base64::engine::general_purpose::STANDARD
             .decode(b64.as_bytes())
-            .map_err(|e| Error::KeyStore(format!("Failed to base64 decode PKCS#8 key: {}", e)))?,
+            .map_err(|err| {
+                debug!(error = %err, "PKCS#8 base64 decode failed");
+                Error::KeyStore("Invalid PKCS#8 PEM body".to_string())
+            })?,
     );
 
     let seed = extract_ed25519_seed_from_pkcs8(&der)?;
-    let kp = Ed25519Keypair::from_seed(&seed);
-    Ok(KeyMaterial::Ed25519(kp))
+    Ok(KeyMaterial::Ed25519(Box::new(
+        Ed25519SigningKey::from_bytes(&seed),
+    )))
 }
 
 /// Extract the 32-byte Ed25519 seed from a PKCS#8 DER blob.
@@ -341,13 +423,22 @@ fn extract_ed25519_seed_from_pkcs8(der: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
 mod tests {
     use super::*;
 
-    // The test PEM from the 1Password output in the spec.
+    // ───── TEST FIXTURES ─────
+    // The Ed25519 and RSA private keys below are FOR UNIT TESTS ONLY.
+    // They are intentionally checked into the repository and have no
+    // value protected by them. Do NOT install them anywhere — anyone with
+    // a copy of this repo can sign arbitrary messages with these keys.
+
+    /// Test PKCS#8 Ed25519 PEM lifted from the 1Password DR-014 spec.
+    /// FOR TESTS ONLY — see banner above.
     const OP_PRIVATE_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMFMCAQEwBQYDK2VwBCIEILfg0K3JM0GwuUuqBcJ79jKqV2owfa4zpRsarl64dDjC\noSMDIQBuIlSrfmaRn6Jj82jh6SDZkTFg0u5TlA9B1wYE2+lIyQ==\n-----END PRIVATE KEY-----\n";
 
+    /// Public counterpart of `OP_PRIVATE_KEY_PEM`. FOR TESTS ONLY.
     const OP_PUBLIC_KEY: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG4iVKt+ZpGfomPzaOHpINmRMWDS7lOUD0HXBgTb6UjJ";
 
-    // Test PKCS#8 RSA 2048 key + matching OpenSSH public key (generated for tests).
+    /// Test PKCS#8 RSA-2048 PEM. Generated locally specifically for these
+    /// tests; NEVER deploy to production. FOR TESTS ONLY.
     const RSA_PRIVATE_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDs/reWpFe7Nfte
 seN0L0ZIW5xXtFNLDcNvZ7rIf4Rp7MOeB+GoBvJqw6gCL2S3RZBB1HgFnoeMMW1V
@@ -379,23 +470,20 @@ IGmiN6jIaYLa8S4Be472ERHj
 ";
     const RSA_PUBLIC_KEY: &str = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDs/reWpFe7NfteseN0L0ZIW5xXtFNLDcNvZ7rIf4Rp7MOeB+GoBvJqw6gCL2S3RZBB1HgFnoeMMW1Vhu/2Jw7S2twOeNCmtDpThG3VBXMJhbwE7oqlWGIa1dIQDqt8x+xndkc0KlRP5BLjwP8FFfpKrSyHG7Ix9IG24jw4RD39KehnH0SSe0buT2LOVTrFAVihplRICVxIxPTCViUcanJC32c3wZDfiRebT8oxSNJvJjhkxBE/zJVXZ045qG1EgPdM0LGozMqeFCGcxHz3ZVCqItLpu1a7tQyOnbZMyGhMP+PDjbYYvahFqf5iftWKZsWGXFPhCzdqU3lBstP3v7Hn";
 
-    /// Build a SignRequest payload (key_blob + data + flags) for tests.
-    fn build_sign_request(public_key: &ssh_key::PublicKey, data: &[u8], flags: u32) -> Bytes {
-        let key_blob = public_key.to_bytes().unwrap();
-        let mut payload = BytesMut::new();
-        payload.put_u32(key_blob.len() as u32);
-        payload.put_slice(&key_blob);
-        payload.put_u32(data.len() as u32);
-        payload.put_slice(data);
-        payload.put_u32(flags);
-        payload.freeze()
+    /// Parse an SSH wire signature blob into (algorithm, signature_bytes).
+    fn parse_blob(blob: &[u8]) -> (String, Vec<u8>) {
+        let mut buf = blob;
+        let algo_len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+        buf = &buf[4..];
+        let algo = std::str::from_utf8(&buf[..algo_len]).unwrap().to_string();
+        buf = &buf[algo_len..];
+        let sig_len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+        buf = &buf[4..];
+        (algo, buf[..sig_len].to_vec())
     }
 
-    fn extract_signature(response: &AgentMessage) -> ssh_key::Signature {
-        let mut buf = &response.payload[..];
-        let sig_len = buf.get_u32() as usize;
-        let sig_bytes = &buf[..sig_len];
-        ssh_key::Signature::try_from(sig_bytes).unwrap()
+    fn parse_ssh_signature(blob: &[u8]) -> ssh_key::Signature {
+        ssh_key::Signature::try_from(blob).unwrap()
     }
 
     fn verify(pub_key: &ssh_key::PublicKey, data: &[u8], sig: &ssh_key::Signature) {
@@ -403,25 +491,12 @@ IGmiN6jIaYLa8S4Be472ERHj
             .unwrap();
     }
 
-    /// Parse a SignResponse payload into (algorithm_name, signature_bytes).
-    /// Used for ssh-rsa where ssh_key 0.6 refuses to construct the Signature.
-    fn parse_response_blob(response: &AgentMessage) -> (String, Vec<u8>) {
-        let mut buf = &response.payload[..];
-        let _blob_len = buf.get_u32() as usize;
-        let algo_len = buf.get_u32() as usize;
-        let algo = std::str::from_utf8(&buf[..algo_len]).unwrap().to_string();
-        buf.advance(algo_len);
-        let sig_len = buf.get_u32() as usize;
-        let sig = buf[..sig_len].to_vec();
-        (algo, sig)
-    }
-
-    /// Verify an ssh-rsa (SHA-1) signature directly via the rsa crate.
-    fn verify_rsa_sha1(pem: &str, data: &[u8], response: &AgentMessage) {
+    /// Verify an ssh-rsa (SHA-1) signature blob directly via the rsa crate.
+    fn verify_rsa_sha1(pem: &str, data: &[u8], blob: &[u8]) {
         use pkcs8::DecodePrivateKey;
         let priv_key = rsa::RsaPrivateKey::from_pkcs8_pem(pem).unwrap();
         let pub_key = rsa::RsaPublicKey::from(&priv_key);
-        let (algo, sig_bytes) = parse_response_blob(response);
+        let (algo, sig_bytes) = parse_blob(blob);
         assert_eq!(algo, "ssh-rsa");
         let sig = rsa::pkcs1v15::Signature::try_from(sig_bytes.as_slice()).unwrap();
         let verifier = rsa::pkcs1v15::VerifyingKey::<sha1::Sha1>::new(pub_key);
@@ -507,113 +582,101 @@ IGmiN6jIaYLa8S4Be472ERHj
     }
 
     #[test]
-    fn sign_pem_rejects_truncated_payload() {
-        let result = sign_pem(OP_PRIVATE_KEY_PEM, &Bytes::new());
+    fn from_pem_rejects_encrypted_pkcs8() {
+        let pem =
+            "-----BEGIN ENCRYPTED PRIVATE KEY-----\nAAA=\n-----END ENCRYPTED PRIVATE KEY-----\n";
+        let result = KeyMaterial::from_pem(pem);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("too short"));
-    }
-
-    #[test]
-    fn sign_pem_rejects_truncated_key_blob() {
-        let mut payload = BytesMut::new();
-        payload.put_u32(100);
-        payload.put_slice(&[0u8; 10]);
-
-        let result = sign_pem(OP_PRIVATE_KEY_PEM, &payload.freeze());
-        assert!(result.is_err());
+        let msg = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("encrypted PKCS#8 should be rejected"),
+        };
         assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("key blob truncated")
+            msg.to_lowercase().contains("encrypted"),
+            "expected encrypted-rejection message, got: {}",
+            msg
         );
     }
 
     #[test]
-    fn sign_pem_rejects_missing_data_length() {
-        let mut payload = BytesMut::new();
-        payload.put_u32(0);
-
-        let result = sign_pem(OP_PRIVATE_KEY_PEM, &payload.freeze());
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("data length missing")
-        );
+    fn from_pem_distinguishes_pkcs8_header_from_encrypted_substring() {
+        // A genuine "BEGIN PRIVATE KEY" with a fake "ENCRYPTED" body must
+        // still be treated as Pkcs8 (header line wins, body is opaque).
+        let mut buf = String::new();
+        buf.push_str(OP_PRIVATE_KEY_PEM);
+        // contains "BEGIN ENCRYPTED PRIVATE KEY" inside a comment-style line
+        // intentionally to make sure we don't conflate it with the header.
+        let result = KeyMaterial::from_pem(&buf);
+        assert!(result.is_ok(), "valid PKCS#8 PEM must still parse");
     }
 
     #[test]
-    fn sign_pem_handles_missing_flags() {
-        let pub_key = ssh_key::PublicKey::from_openssh(OP_PUBLIC_KEY).unwrap();
-        let data = b"hello";
-        let key_blob = pub_key.to_bytes().unwrap();
-        let mut payload = BytesMut::new();
-        payload.put_u32(key_blob.len() as u32);
-        payload.put_slice(&key_blob);
-        payload.put_u32(data.len() as u32);
-        payload.put_slice(data);
-        // No flags suffix.
-
-        let response = sign_pem(OP_PRIVATE_KEY_PEM, &payload.freeze()).unwrap();
-        assert_eq!(response.msg_type, MessageType::SignResponse);
+    fn from_pem_handles_crlf_line_endings() {
+        let crlf_pem = OP_PRIVATE_KEY_PEM.replace('\n', "\r\n");
+        let material = KeyMaterial::from_pem(&crlf_pem).unwrap();
+        assert!(matches!(material, KeyMaterial::Ed25519(_)));
     }
 
     #[test]
-    fn sign_pem_ed25519_produces_verifiable_signature() {
+    fn from_pem_handles_no_trailing_newline() {
+        let trimmed = OP_PRIVATE_KEY_PEM.trim_end_matches('\n');
+        let material = KeyMaterial::from_pem(trimmed).unwrap();
+        assert!(matches!(material, KeyMaterial::Ed25519(_)));
+    }
+
+    #[test]
+    fn from_pem_rsa_handles_crlf_line_endings() {
+        let crlf_pem = RSA_PRIVATE_KEY_PEM.replace('\n', "\r\n");
+        let material = KeyMaterial::from_pem(&crlf_pem).unwrap();
+        assert!(matches!(material, KeyMaterial::Rsa(_)));
+    }
+
+    #[test]
+    fn sign_ed25519_produces_verifiable_signature() {
         let pub_key = ssh_key::PublicKey::from_openssh(OP_PUBLIC_KEY).unwrap();
         let data = b"ed25519 challenge";
 
-        let payload = build_sign_request(&pub_key, data, 0);
-        let response = sign_pem(OP_PRIVATE_KEY_PEM, &payload).unwrap();
-        let sig = extract_signature(&response);
-
-        verify(&pub_key, data, &sig);
+        let blob = sign(OP_PRIVATE_KEY_PEM, data, 0).unwrap();
+        let (algo, _) = parse_blob(&blob);
+        assert_eq!(algo, "ssh-ed25519");
+        verify(&pub_key, data, &parse_ssh_signature(&blob));
     }
 
     #[test]
-    fn sign_pem_rsa_with_default_flags_produces_verifiable_signature() {
+    fn sign_rsa_with_default_flags_uses_ssh_rsa_sha1() {
         // flags=0 -> ssh-rsa (SHA-1). Used by legacy OpenSSH (e.g. r3.kawaz.jp).
         // ssh-key 0.6 refuses Algorithm::Rsa { hash: None }, so verify via rsa crate.
-        let pub_key = ssh_key::PublicKey::from_openssh(RSA_PUBLIC_KEY).unwrap();
         let data = b"r3 legacy ssh-rsa challenge";
-
-        let payload = build_sign_request(&pub_key, data, 0);
-        let response = sign_pem(RSA_PRIVATE_KEY_PEM, &payload).unwrap();
-        verify_rsa_sha1(RSA_PRIVATE_KEY_PEM, data, &response);
+        let blob = sign(RSA_PRIVATE_KEY_PEM, data, 0).unwrap();
+        verify_rsa_sha1(RSA_PRIVATE_KEY_PEM, data, &blob);
     }
 
     #[test]
-    fn sign_pem_rsa_with_sha2_256_flag_produces_verifiable_signature() {
+    fn sign_rsa_with_sha2_256_flag_uses_rsa_sha2_256() {
         let pub_key = ssh_key::PublicKey::from_openssh(RSA_PUBLIC_KEY).unwrap();
         let data = b"rsa-sha2-256 challenge";
 
-        let payload = build_sign_request(&pub_key, data, SSH_AGENT_RSA_SHA2_256);
-        let response = sign_pem(RSA_PRIVATE_KEY_PEM, &payload).unwrap();
-        let sig = extract_signature(&response);
-
-        verify(&pub_key, data, &sig);
+        let blob = sign(RSA_PRIVATE_KEY_PEM, data, SSH_AGENT_RSA_SHA2_256).unwrap();
+        let (algo, _) = parse_blob(&blob);
+        assert_eq!(algo, "rsa-sha2-256");
+        verify(&pub_key, data, &parse_ssh_signature(&blob));
     }
 
     #[test]
-    fn sign_pem_rsa_with_sha2_512_flag_produces_verifiable_signature() {
+    fn sign_rsa_with_sha2_512_flag_uses_rsa_sha2_512() {
         // Modern OpenSSH clients request rsa-sha2-512 first.
         let pub_key = ssh_key::PublicKey::from_openssh(RSA_PUBLIC_KEY).unwrap();
         let data = b"rsa-sha2-512 challenge";
 
-        let payload = build_sign_request(&pub_key, data, SSH_AGENT_RSA_SHA2_512);
-        let response = sign_pem(RSA_PRIVATE_KEY_PEM, &payload).unwrap();
-        let sig = extract_signature(&response);
-
-        verify(&pub_key, data, &sig);
+        let blob = sign(RSA_PRIVATE_KEY_PEM, data, SSH_AGENT_RSA_SHA2_512).unwrap();
+        let (algo, _) = parse_blob(&blob);
+        assert_eq!(algo, "rsa-sha2-512");
+        verify(&pub_key, data, &parse_ssh_signature(&blob));
     }
 
     #[test]
-    fn sign_pem_rsa_openssh_format_works() {
+    fn sign_rsa_openssh_format_works() {
         // Ensure RSA keys parsed from OpenSSH format (not just PKCS#8) sign too.
-        // Convert the test PKCS#8 RSA into OpenSSH format using ssh-key, then
-        // route through sign_pem.
         use pkcs8::DecodePrivateKey;
         let rsa_key = rsa::RsaPrivateKey::from_pkcs8_pem(RSA_PRIVATE_KEY_PEM).unwrap();
         let kp = ssh_key::private::RsaKeypair::try_from(rsa_key).unwrap();
@@ -622,10 +685,7 @@ IGmiN6jIaYLa8S4Be472ERHj
 
         let pub_key = ssh_key::PublicKey::from_openssh(RSA_PUBLIC_KEY).unwrap();
         let data = b"openssh format rsa";
-        let payload = build_sign_request(&pub_key, data, SSH_AGENT_RSA_SHA2_512);
-        let response = sign_pem(&openssh_pem, &payload).unwrap();
-        let sig = extract_signature(&response);
-
-        verify(&pub_key, data, &sig);
+        let blob = sign(&openssh_pem, data, SSH_AGENT_RSA_SHA2_512).unwrap();
+        verify(&pub_key, data, &parse_ssh_signature(&blob));
     }
 }

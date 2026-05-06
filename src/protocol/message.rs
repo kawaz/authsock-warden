@@ -4,6 +4,44 @@ use crate::error::{Error, Result};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use ssh_key::{Fingerprint, HashAlg, PublicKey};
 
+/// Parsed SSH agent SIGN_REQUEST payload fields.
+#[derive(Debug, Clone)]
+pub struct SignRequestFields {
+    /// Wire-format public key blob identifying the key to sign with.
+    pub key_blob: Bytes,
+    /// Bytes the agent is asked to sign.
+    pub data: Bytes,
+    /// Hash-algorithm selection flags (`SSH_AGENT_RSA_SHA2_256` etc.).
+    pub flags: u32,
+}
+
+/// Read a size-prefixed (u32-LE-length + bytes) field from `buf`,
+/// enforcing `MAX_BLOB_SIZE` to prevent memory exhaustion.
+fn read_size_prefixed(buf: &mut &[u8], label: &str) -> Result<Bytes> {
+    if buf.remaining() < 4 {
+        return Err(Error::InvalidMessage(format!("{} length missing", label)));
+    }
+    let len_u32 = buf.get_u32();
+    if len_u32 > MAX_BLOB_SIZE {
+        return Err(Error::InvalidMessage(format!(
+            "{} size {} exceeds maximum allowed {}",
+            label, len_u32, MAX_BLOB_SIZE
+        )));
+    }
+    let len = usize::try_from(len_u32).map_err(|_| {
+        Error::InvalidMessage(format!(
+            "{} length {} cannot be converted to usize",
+            label, len_u32
+        ))
+    })?;
+    if buf.remaining() < len {
+        return Err(Error::InvalidMessage(format!("{} truncated", label)));
+    }
+    let bytes = Bytes::copy_from_slice(&buf[..len]);
+    buf.advance(len);
+    Ok(bytes)
+}
+
 /// Maximum number of identities allowed in a single message.
 /// This prevents malicious agents from causing excessive memory allocation.
 const MAX_IDENTITIES: u32 = 10000;
@@ -286,6 +324,46 @@ impl AgentMessage {
             msg_type: MessageType::IdentitiesAnswer,
             payload: payload.freeze(),
         }
+    }
+
+    /// Build a SignResponse from a pre-encoded signature blob.
+    ///
+    /// `signature_blob` is the SSH wire-format signature
+    /// (`string(algorithm) + string(signature)`), produced by the signer.
+    pub fn sign_response(signature_blob: &[u8]) -> Self {
+        let mut payload = BytesMut::with_capacity(4 + signature_blob.len());
+        payload
+            .put_u32(u32::try_from(signature_blob.len()).expect("signature blob exceeds u32::MAX"));
+        payload.put_slice(signature_blob);
+        Self {
+            msg_type: MessageType::SignResponse,
+            payload: payload.freeze(),
+        }
+    }
+
+    /// Parse the full SignRequest payload into routing key, signing input,
+    /// and SSH agent flags.
+    pub fn parse_sign_request(&self) -> Result<SignRequestFields> {
+        if self.msg_type != MessageType::SignRequest {
+            return Err(Error::InvalidMessage(format!(
+                "Expected SignRequest, got {:?}",
+                self.msg_type
+            )));
+        }
+
+        let mut buf = &self.payload[..];
+        let key_blob = read_size_prefixed(&mut buf, "Key blob")?;
+        let data = read_size_prefixed(&mut buf, "Sign data")?;
+        let flags = if buf.remaining() >= 4 {
+            buf.get_u32()
+        } else {
+            0
+        };
+        Ok(SignRequestFields {
+            key_blob,
+            data,
+            flags,
+        })
     }
 
     /// Parse the key blob from a SignRequest message
